@@ -1,0 +1,26 @@
+[project]
+name = "aioclickhouse"
+version = "0.0.1"
+authors = [{ name = "darkstussy" }, ]
+description = "Asynchronous Python client for ClickHouse built on asyncio."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "aiohttp[speedups]~=3.13.2"
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Framework :: AsyncIO",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Topic :: Internet :: WWW/HTTP :: Indexing/Search",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+]
+
+[project.urls]
+Homepage = "https://github.com/darkstussy/aioclickhouse"
+Issues = "https://github.com/darkstussy/aioclickhouse/issues"
