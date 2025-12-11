@@ -1,4 +1,4 @@
-__title__ = "aioclickhouse"
+__title__ = "aiochlite"
 
 __author__ = "darkstussy"
 

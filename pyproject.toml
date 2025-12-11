@@ -1,8 +1,8 @@
 [project]
-name = "aioclickhouse"
+name = "aiochlite"
 version = "0.0.1"
 authors = [{ name = "darkstussy" }, ]
-description = "Asynchronous Python client for ClickHouse built on asyncio."
+description = "Lightweight asynchronous ClickHouse client for Python built on asyncio."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -22,5 +22,5 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/darkstussy/aioclickhouse"
-Issues = "https://github.com/darkstussy/aioclickhouse/issues"
+Homepage = "https://github.com/darkstussy/aiochlitex"
+Issues = "https://github.com/darkstussy/aiochlite/issues"
