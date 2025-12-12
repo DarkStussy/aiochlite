@@ -1,0 +1,9 @@
+{
+  "typeCheckingMode": "basic",
+  "exclude": [
+    ".venv",
+    "**/__pycache__/**",
+    "build",
+    "docs"
+  ]
+}

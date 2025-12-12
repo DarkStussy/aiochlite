@@ -1,0 +1,68 @@
+line-length = 120
+target-version = "py312"
+
+include = ["aiochlite/**.py", "examples/**.py", "tests/**.py"]
+
+[lint]
+select = [
+    "ALL",
+]
+
+ignore = [
+    "ARG",
+    "ANN",
+    "ASYNC109",
+    "BLE001",
+    "COM812",
+    "D",
+    "EM101",
+    "EM102",
+    "FBT001",
+    "ISC003",
+    "N818",
+    "PT001",
+    "PT023",
+    "PLR0913",
+    "PLC0415",
+    "RET505",
+    "S101",
+    "S110",
+    "SIM103",
+    "SIM108",
+    "SIM114",
+    "SLF001",
+    "TRY003",
+    "TC001",
+    "TC002",
+    "TC003",
+    "TC006",
+    "UP041",
+    "UP035",
+]
+
+[lint.per-file-ignores]
+"tests/**" = ["A002", "C901", "INP001", "PLR0915", "PLR2004", "S101", "TID252"]
+"examples/**" = ["INP001", "T201"]
+
+[format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+exclude = [
+    ".eggs",
+    ".git",
+    ".hg",
+    ".mypy_cache",
+    ".tox",
+    ".venv",
+    "venv",
+    "_build",
+    "buck-out",
+    "build",
+    "docs",
+    ".pytest_cache",
+    ".idea",
+    "__pycache__",
+]

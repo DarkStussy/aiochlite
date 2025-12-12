@@ -4,13 +4,12 @@ version = "0.0.1"
 authors = [{ name = "darkstussy" }, ]
 description = "Lightweight asynchronous ClickHouse client for Python built on asyncio."
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
-    "aiohttp[speedups]~=3.13.2"
+    "httpx~=0.28.1"
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
