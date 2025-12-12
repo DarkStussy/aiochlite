@@ -46,13 +46,17 @@ class AsyncChClient:
         self._http_client = HttpClient(session)
 
     async def __aenter__(self) -> Self:
-        await self.alive(raise_on_error=True)
+        await self.ping(raise_on_error=True)
         return self
 
     async def __aexit__(self, *args):
+        await self.close()
+
+    async def close(self):
+        """Close the underlying HTTP client session."""
         await self._http_client.close()
 
-    async def alive(self, *, raise_on_error: bool = False) -> bool:
+    async def ping(self, *, raise_on_error: bool = False) -> bool:
         """Check if ClickHouse server is reachable.
 
         Args:
@@ -107,7 +111,7 @@ class AsyncChClient:
         params, data = self._prepare_query(query, **kwargs)
         await self._http_client.post(self._url, params=params, data=data)
 
-    async def iter(self, query: str, **kwargs: Unpack[QueryOptions]) -> AsyncIterator[Row]:
+    async def stream(self, query: str, **kwargs: Unpack[QueryOptions]) -> AsyncIterator[Row]:
         """Execute query and iterate over results.
 
         Yields:
@@ -133,7 +137,7 @@ class AsyncChClient:
         Raises:
             ChClientError: If query execution fails.
         """
-        return [row async for row in self.iter(query, **kwargs)]
+        return [row async for row in self.stream(query, **kwargs)]
 
     async def fetchone(self, query: str, **kwargs: Unpack[QueryOptions]) -> Row | None:
         """Execute query and fetch first result row.
@@ -144,7 +148,7 @@ class AsyncChClient:
         Raises:
             ChClientError: If query execution fails.
         """
-        async for row in self.iter(query, **kwargs):
+        async for row in self.stream(query, **kwargs):
             return row
 
         return None

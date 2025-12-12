@@ -6,7 +6,7 @@ description = "Lightweight asynchronous ClickHouse client for Python built on as
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "aiohttp[speedups]~=3.13.2"
+    "aiohttp~=3.13.2"
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
