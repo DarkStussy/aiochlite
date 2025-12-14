@@ -1,0 +1,6 @@
+# lint
+ruff==0.14.9
+basedpyright==1.36.1
+# tests
+pytest~=9.0.2
+pytest-asyncio~=1.3.0

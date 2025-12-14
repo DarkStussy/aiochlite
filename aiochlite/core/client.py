@@ -53,7 +53,7 @@ class ChClientCore:
         settings: Mapping[str, Any] | None = None,
         external_tables: dict[str, ExternalTable] | None = None,
     ) -> dict[str, Any]:
-        url_params: dict[str, Any] = {"database": self._database}
+        url_params: dict[str, Any] = {"database": self._database, "output_format_json_quote_decimals": "1"}
 
         if self._enable_compression:
             url_params["enable_http_compression"] = "1"

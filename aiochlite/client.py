@@ -79,12 +79,20 @@ class AsyncChClient:
 
         return True
 
-    def _prepare_query(self, query: str, **kwargs: Unpack[QueryOptions]) -> tuple[dict[str, Any], str | FormData]:
-        """Prepare query for execution by adding FORMAT clause and building params."""
-        if "format" in query.lower():
-            raise ValueError("The query must not contain a FORMAT clause.")
+    def _prepare_query(
+        self,
+        query: str,
+        *,
+        add_format: bool = True,
+        **kwargs: Unpack[QueryOptions],
+    ) -> tuple[dict[str, Any], str | FormData]:
+        """Prepare query for execution by adding FORMAT clause (when needed) and building params."""
+        if add_format:
+            if "format" in query.lower():
+                raise ValueError("The query must not contain a FORMAT clause.")
 
-        query = f"{query} FORMAT JSONCompactEachRowWithNamesAndTypes"
+            query = f"{query} FORMAT JSONCompactEachRowWithNamesAndTypes"
+
         params = self._core.build_query_params(**kwargs)
 
         if external_tables := kwargs.get("external_tables"):
@@ -109,7 +117,7 @@ class AsyncChClient:
         Raises:
             ChClientError: If query execution fails.
         """
-        params, data = self._prepare_query(query, **kwargs)
+        params, data = self._prepare_query(query, add_format=False, **kwargs)
         await self._http_client.post(self._url, params=params, data=data)
 
     async def stream(self, query: str, **kwargs: Unpack[QueryOptions]) -> AsyncIterator[Row]:

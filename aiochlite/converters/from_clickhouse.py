@@ -21,7 +21,10 @@ def _parse_uuid(value: str) -> UUID:
     return UUID(value)
 
 
-def _parse_decimal(value: str) -> Decimal:
+def _parse_decimal(value: Any) -> Decimal:
+    if isinstance(value, Decimal):
+        return value
+
     return Decimal(value)
 
 
@@ -116,8 +119,6 @@ def _parse_string_type(value: str, base_type: str, ch_type: str) -> Any:
         return _parse_date(value)
     if base_type == "UUID":
         return _parse_uuid(value)
-    if base_type == "Decimal":
-        return _parse_decimal(value)
 
     return value
 
@@ -137,6 +138,9 @@ def from_clickhouse(value: Any, ch_type: str) -> Any:
         return None
 
     base_type = _extract_base_type(ch_type)
+
+    if base_type.startswith("Decimal"):
+        return _parse_decimal(value)
 
     if isinstance(value, str):
         return _parse_string_type(value, base_type, ch_type)

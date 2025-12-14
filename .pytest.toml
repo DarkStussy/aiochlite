@@ -4,3 +4,6 @@ testpaths = [
     "tests",
 ]
 asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "clickhouse: integration tests that require a running ClickHouse HTTP endpoint",
+]

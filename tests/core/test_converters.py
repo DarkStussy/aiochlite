@@ -93,6 +93,12 @@ class TestFromClickHouse:
         assert isinstance(result, Decimal)
         assert result == Decimal("123.456")
 
+    def test_decimal_variants(self):
+        """Test Decimal32/64/128 conversion."""
+        result = from_clickhouse("123.45", "Decimal32(2)")
+        assert isinstance(result, Decimal)
+        assert result == Decimal("123.45")
+
     def test_nullable_types(self):
         """Test Nullable wrapper."""
         result = from_clickhouse("2025-12-14 15:30:45", "Nullable(DateTime)")
