@@ -5,6 +5,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from aiochlite import from_clickhouse, to_clickhouse, to_json
+from aiochlite.core import ChClientCore
 
 
 class TestToClickHouse:
@@ -157,6 +158,28 @@ class TestFromClickHouse:
         assert isinstance(result, list)
         assert all(isinstance(d, date) for d in result)
         assert result == [date(2025, 12, 14), date(2025, 12, 15)]
+
+
+class TestCoreConversion:
+    def test_build_converters_caches_by_type(self):
+        core = ChClientCore()
+        converter_a = core.build_converters(["Date"])[0]
+        converter_b = core.build_converters(["Date"])[0]
+
+        assert converter_a is converter_b
+
+    def test_parse_row_with_prebuilt_converters(self):
+        core = ChClientCore()
+        names = ["d", "price"]
+        types = ["Date", "Decimal(10, 2)"]
+        converters = core.build_converters(types)
+        line = json.dumps(["2025-12-14", "123.45"])
+
+        row = core.parse_row(names, converters, line)
+
+        assert row is not None
+        assert row["d"] == date(2025, 12, 14)
+        assert row["price"] == Decimal("123.45")
 
 
 class TestToJson:

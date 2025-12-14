@@ -2,9 +2,9 @@
 
 import json
 from collections.abc import Mapping
-from typing import Any, TypedDict, Unpack
+from typing import Any, Callable, TypedDict, Unpack
 
-from aiochlite.converters import from_clickhouse, to_clickhouse
+from aiochlite.converters import converter_for_ch_type, to_clickhouse
 
 from .models import ExternalTable, Row
 
@@ -74,21 +74,26 @@ class ChClientCore:
 
         return url_params
 
-    def parse_row(self, names: list[str], types: list[str], line: str) -> Row | None:
+    @staticmethod
+    def build_converters(types: list[str]) -> list[Callable[[Any], Any]]:
+        """Build converters for provided ClickHouse types (cached by type string)."""
+        return [converter_for_ch_type(tp) for tp in types]
+
+    def parse_row(self, names: list[str], converters: list[Callable[[Any], Any]], line: str) -> Row | None:
         """
         Parse row from ClickHouse response.
 
         Args:
-            names: Column names.
-            types: ClickHouse column types.
-            line: JSON line with values.
+            names (list[str]): Column names.
+            converters (list[Callable[[Any], Any]]]): Pre-built converters for each column type.
+            line (str): JSON line with values.
 
         Returns:
             Row | None: Parsed row or None if empty.
         """
         if line.strip():
             values = json.loads(line)
-            converted_values = [from_clickhouse(val, typ) for val, typ in zip(values, types, strict=True)]
+            converted_values = [convert(val) for val, convert in zip(values, converters, strict=True)]
             return Row(names, converted_values)
 
         return None

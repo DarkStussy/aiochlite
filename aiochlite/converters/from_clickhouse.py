@@ -1,7 +1,8 @@
 import re
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any, Final
+from functools import lru_cache
+from typing import Any, Callable, Final
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -28,6 +29,7 @@ def _parse_decimal(value: Any) -> Decimal:
     return Decimal(value)
 
 
+@lru_cache(maxsize=256)
 def _extract_base_type(ch_type: str) -> str:
     """Extract base type from ClickHouse type."""
     if ch_type.startswith("Nullable("):
@@ -44,6 +46,7 @@ def _extract_base_type(ch_type: str) -> str:
     return ch_type
 
 
+@lru_cache(maxsize=256)
 def _unwrap_wrappers(ch_type: str) -> str:
     """Remove Nullable/LowCardinality wrappers while keeping inner type definition intact."""
     unwrapped = ch_type.strip()
@@ -57,6 +60,7 @@ def _unwrap_wrappers(ch_type: str) -> str:
         return unwrapped
 
 
+@lru_cache(maxsize=256)
 def _split_type_arguments(type_list: str) -> list[str]:
     """Split type arguments using regex that ignores commas inside parentheses."""
     return [part.strip() for part in _TOP_LEVEL_COMMA_SPLIT_RE.split(type_list) if part.strip()]
@@ -90,6 +94,7 @@ def _parse_array(value: list, ch_type: str) -> list:
     return [from_clickhouse(item, inner) for item in value]
 
 
+@lru_cache(maxsize=256)
 def _extract_timezone(ch_type: str) -> ZoneInfo | None:
     """Extract timezone from DateTime/DateTime64 type definition."""
     match = _DATETIME_TZ_RE.search(_unwrap_wrappers(ch_type))
@@ -128,8 +133,8 @@ def from_clickhouse(value: Any, ch_type: str) -> Any:
     Convert value from ClickHouse type to Python type.
 
     Args:
-        value: Value from ClickHouse response.
-        ch_type: ClickHouse type name (e.g., 'DateTime', 'Nullable(UUID)').
+        value (Any): Value from ClickHouse response.
+        ch_type (str): ClickHouse type name (e.g., 'DateTime', 'Nullable(UUID)').
 
     Returns:
         Any: Converted Python value.
@@ -152,3 +157,8 @@ def from_clickhouse(value: Any, ch_type: str) -> Any:
             return _parse_array(value, ch_type)
 
     return value
+
+
+@lru_cache(maxsize=128)
+def converter_for_ch_type(ch_type: str) -> Callable[[Any], Any]:
+    return lambda v: from_clickhouse(v, ch_type)

@@ -133,9 +133,10 @@ class AsyncChClient:
         lines = self._http_client.stream(self._url, params=params, data=data)
         names = json.loads(await anext(lines))
         types = json.loads(await anext(lines))
+        converters = self._core.build_converters(types)
 
         async for line in lines:
-            if row := self._core.parse_row(names, types, line):
+            if row := self._core.parse_row(names, converters, line):
                 yield row
 
     async def fetch(self, query: str, **kwargs: Unpack[QueryOptions]) -> list[Row]:

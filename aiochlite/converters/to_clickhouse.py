@@ -69,7 +69,7 @@ def to_clickhouse(value: Any) -> str | int | float:
     Convert Python value to ClickHouse parameter format.
 
     Args:
-        value: Python value to convert.
+        value (Any): Python value to convert.
 
     Returns:
         str | int | float: Converted value suitable for ClickHouse.
