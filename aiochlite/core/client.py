@@ -4,6 +4,8 @@ import json
 from collections.abc import Mapping
 from typing import Any, TypedDict, Unpack
 
+from aiochlite.converters import from_clickhouse, to_clickhouse
+
 from .models import ExternalTable, Row
 
 
@@ -58,7 +60,7 @@ class ChClientCore:
 
         if params:
             for key, value in params.items():
-                url_params[f"param_{key}"] = value
+                url_params[f"param_{key}"] = to_clickhouse(value)
 
         if settings:
             url_params.update(settings)
@@ -72,9 +74,21 @@ class ChClientCore:
 
         return url_params
 
-    def parse_row(self, names: list[str], line: str) -> Row | None:
+    def parse_row(self, names: list[str], types: list[str], line: str) -> Row | None:
+        """
+        Parse row from ClickHouse response.
+
+        Args:
+            names: Column names.
+            types: ClickHouse column types.
+            line: JSON line with values.
+
+        Returns:
+            Row | None: Parsed row or None if empty.
+        """
         if line.strip():
             values = json.loads(line)
-            return Row(names, values)
+            converted_values = [from_clickhouse(val, typ) for val, typ in zip(values, types, strict=True)]
+            return Row(names, converted_values)
 
         return None

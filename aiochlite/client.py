@@ -3,6 +3,7 @@ from typing import Any, AsyncIterator, Mapping, Self, Sequence, TypedDict, Unpac
 
 from aiohttp import ClientSession, FormData
 
+from .converters import to_json
 from .core import ChClientCore, ClientCoreOptions, ExternalTable, Row, build_external_data
 from .exceptions import ChClientError
 from .http_client import HttpClient
@@ -83,7 +84,7 @@ class AsyncChClient:
         if "format" in query.lower():
             raise ValueError("The query must not contain a FORMAT clause.")
 
-        query = f"{query} FORMAT JSONCompactEachRowWithNames"
+        query = f"{query} FORMAT JSONCompactEachRowWithNamesAndTypes"
         params = self._core.build_query_params(**kwargs)
 
         if external_tables := kwargs.get("external_tables"):
@@ -123,9 +124,10 @@ class AsyncChClient:
         params, data = self._prepare_query(query, **kwargs)
         lines = self._http_client.stream(self._url, params=params, data=data)
         names = json.loads(await anext(lines))
+        types = json.loads(await anext(lines))
 
         async for line in lines:
-            if row := self._core.parse_row(names, line):
+            if row := self._core.parse_row(names, types, line):
                 yield row
 
     async def fetch(self, query: str, **kwargs: Unpack[QueryOptions]) -> list[Row]:
@@ -197,10 +199,10 @@ class AsyncChClient:
 
         if isinstance(data[0], dict):
             format_name = "JSONEachRow"
-            body = "\n".join(json.dumps(row) for row in data)
+            body = "\n".join(to_json(row) for row in data)
         else:
             format_name = "JSONCompactEachRow"
-            body = "\n".join(json.dumps(list(row)) for row in data)
+            body = "\n".join(to_json(list(row)) for row in data)
 
         await self._http_client.post(
             self._url,

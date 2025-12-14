@@ -10,11 +10,30 @@
 
 > **Beta notice:** APIs and behavior may change; expect sharp edges while things settle.
 
+## Table of Contents
+
+- [Features](#features)
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+  - [Basic Connection](#basic-connection)
+  - [Execute Query](#execute-query)
+  - [Insert Data](#insert-data)
+  - [Fetch Results](#fetch-results)
+  - [Query Parameters](#query-parameters)
+  - [Query Settings](#query-settings)
+  - [External Tables](#external-tables)
+  - [Error Handling](#error-handling)
+  - [Custom Session](#custom-session)
+  - [Enable Compression](#enable-compression)
+- [Type Conversion](#type-conversion)
+- [License](#license)
+
 ## Features
 
 - **Lightweight** - minimal dependencies, only aiohttp required
 - **Streaming support** - efficient processing of large datasets with `.stream()`
 - **External tables** - advanced temporary data support
+- **Type conversion** - automatic conversion between Python and ClickHouse types
 - **Type-safe** - full type hints coverage
 - **Flexible** - custom sessions, compression, query settings
 
@@ -113,11 +132,62 @@ async for row in client.stream("SELECT * FROM users"):
 ### Query Parameters
 
 ```python
+# Basic types
 result = await client.fetch(
     "SELECT * FROM users WHERE id = {id:UInt32}",
     params={"id": 1}
 )
+
+# Lists and tuples (arrays)
+result = await client.fetch(
+    "SELECT * FROM users WHERE id IN {ids:Array(UInt32)}",
+    params={"ids": [1, 2, 3]}  # or tuple: (1, 2, 3)
+)
+
+# Datetime and date
+from datetime import datetime, date
+
+result = await client.fetch(
+    "SELECT * FROM events WHERE created_at > {dt:DateTime} AND date = {d:Date}",
+    params={
+        "dt": datetime(2025, 12, 14, 15, 30, 45),
+        "d": date(2025, 12, 14)
+    }
+)
+
+# UUID
+from uuid import UUID
+
+result = await client.fetch(
+    "SELECT * FROM users WHERE uuid = {uid:UUID}",
+    params={"uid": UUID("550e8400-e29b-41d4-a716-446655440000")}
+)
+
+# Decimal
+from decimal import Decimal
+
+result = await client.fetch(
+    "SELECT * FROM products WHERE price > {price:Decimal(10, 2)}",
+    params={"price": Decimal("99.99")}
+)
+
+# Nested arrays and maps
+result = await client.fetch(
+    "SELECT {matrix:Array(Array(Int32))} AS matrix, {data:Map(String, Int32)} AS data",
+    params={
+        "matrix": [[1, 2], [3, 4]],
+        "data": {"a": 1, "b": 2}
+    }
+)
 ```
+
+**Supported parameter types:**
+- Basic: `int`, `float`, `str`, `bool`, `None`
+- Collections: `list`, `tuple`, `dict`
+- Date/Time: `datetime`, `date`
+- Special: `UUID`, `Decimal`, `bytes`
+
+See [Type Conversion](#type-conversion) for full type mapping details.
 
 ### Query Settings
 
@@ -185,6 +255,61 @@ async with AsyncChClient(url="http://localhost:8123", session=session) as client
 async with AsyncChClient(url="http://localhost:8123", enable_compression=True) as client:
     result = await client.fetch("SELECT * FROM users")
 ```
+
+## Type Conversion
+
+**Automatic type conversion from ClickHouse:**
+
+| ClickHouse Type | Python Type | Notes |
+|----------------|-------------|-------|
+| **Numeric Types** |
+| `UInt8`, `UInt16`, `UInt32` | `int` | |
+| `UInt64`, `UInt128`, `UInt256` | `int` | |
+| `Int8`, `Int16`, `Int32` | `int` | |
+| `Int64`, `Int128`, `Int256` | `int` | |
+| `Float32`, `Float64` | `float` | |
+| `Decimal(P, S)` | `Decimal` | Precision preserved |
+| `Decimal32`, `Decimal64`, `Decimal128`, `Decimal256` | `Decimal` | |
+| **String Types** |
+| `String` | `str` | |
+| `FixedString(N)` | `str` | Padding stripped |
+| **Date/Time Types** |
+| `Date` | `date` | |
+| `Date32` | `date` | Extended range |
+| `DateTime` | `datetime` | Timezone unaware |
+| `DateTime64(P)` | `datetime` | Microsecond precision |
+| **Special Types** |
+| `UUID` | `UUID` | |
+| `IPv4` | `str` | Formatted as string |
+| `IPv6` | `str` | Formatted as string |
+| `Enum8`, `Enum16` | `str` | Enum value name |
+| `Bool` | `bool` | |
+| **Composite Types** |
+| `Array(T)` | `list[T]` | Elements converted recursively |
+| `Tuple(T1, T2, ...)` | `tuple[T1, T2, ...]` | Elements converted recursively |
+| `Map(K, V)` | `dict[K, V]` | Keys and values converted |
+| `Nested(...)` | `list[dict]` | Represented as array of structs |
+| **Type Modifiers** |
+| `Nullable(T)` | `T \| None` | Unwraps to base type |
+| `LowCardinality(T)` | `T` | Transparent wrapper |
+| **Other Types** |
+| `Nothing` | `None` | Always null |
+| `JSON` | `dict` | Experimental type |
+
+**Python to ClickHouse conversion:**
+
+When sending data to ClickHouse (query parameters and inserts), Python types are automatically converted:
+
+- `datetime` → `YYYY-MM-DD HH:MM:SS` string format
+- `date` → `YYYY-MM-DD` string format
+- `UUID` → string representation
+- `Decimal` → string representation
+- `list` → array format `[1,2,3]`
+- `tuple` → tuple format `(1,2,3)` (for parameters) or array (for inserts)
+- `dict` → map format `{'key':'value'}`
+- `bytes` → UTF-8 decoded string
+- `None` → `NULL`
+- `bool` → `1` (True) or `0` (False)
 
 ## License
 
