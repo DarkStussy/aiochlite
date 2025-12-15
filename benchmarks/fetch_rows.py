@@ -112,7 +112,7 @@ def _print_rounds(label: str, rows: int, durations: list[float]) -> None:
         print(f"Round {idx}: {dur * 1000:8.2f} ms ({rows / dur:,.0f} rows/s, {(dur / rows) * 1e6:,.1f} µs/row)")
     if durations:
         avg = sum(durations) / len(durations)
-        print(f"Avg:      {avg * 1000:8.2f} ms ({rows / avg:,.0f} rows/s, {(avg / rows) * 1e6:,.1f} µs/row)")
+        print(f"Avg:     {avg * 1000:8.2f} ms ({rows / avg:,.0f} rows/s, {(avg / rows) * 1e6:,.1f} µs/row)")
 
 
 async def _bench_aiochlite_rows(table: str) -> None:
