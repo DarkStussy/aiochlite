@@ -244,10 +244,9 @@ except ChClientError as e:
 from aiohttp import ClientSession, ClientTimeout
 
 timeout = ClientTimeout(total=30)
-session = ClientSession(timeout=timeout)
-
-async with AsyncChClient(url="http://localhost:8123", session=session) as client:
-    result = await client.fetch("SELECT 1")
+async with ClientSession(timeout=timeout) as session:
+    async with AsyncChClient(url="http://localhost:8123", session=session) as client:
+        result = await client.fetch("SELECT 1")
 ```
 
 ### Enable Compression
@@ -263,51 +262,46 @@ async with AsyncChClient(url="http://localhost:8123", enable_compression=True) a
 
 | ClickHouse Type | Python Type | Notes |
 |----------------|-------------|-------|
-| **Numeric Types** |
-| `UInt8`, `UInt16`, `UInt32` | `int` | |
-| `UInt64`, `UInt128`, `UInt256` | `int` | |
-| `Int8`, `Int16`, `Int32` | `int` | |
-| `Int64`, `Int128`, `Int256` | `int` | |
+| **Numeric** | | |
+| `UInt8`, `UInt16`, `UInt32`, `UInt64` | `int` | |
+| `Int8`, `Int16`, `Int32`, `Int64` | `int` | |
 | `Float32`, `Float64` | `float` | |
 | `Decimal(P, S)` | `Decimal` | Precision preserved |
-| `Decimal32`, `Decimal64`, `Decimal128`, `Decimal256` | `Decimal` | |
-| **String Types** |
+| `Decimal32(S)`, `Decimal64(S)`, `Decimal128(S)`, `Decimal256(S)` | `Decimal` | Precision preserved |
+| **String** | | |
 | `String` | `str` | |
-| `FixedString(N)` | `str` | Padding stripped |
-| **Date/Time Types** |
+| `FixedString(N)` | `str` | Null padding stripped |
+| **Date/Time** | | |
 | `Date` | `date` | |
-| `Date32` | `date` | Extended range |
-| `DateTime` | `datetime` | Timezone unaware |
-| `DateTime64(P)` | `datetime` | Microsecond precision |
-| **Special Types** |
+| `Date32` | `date` | |
+| `DateTime` | `datetime` | `tzinfo` only if the type includes a timezone |
+| `DateTime64(P)` | `datetime` | `tzinfo` only if the type includes a timezone |
+| **Special** | | |
 | `UUID` | `UUID` | |
-| `IPv4` | `str` | Formatted as string |
-| `IPv6` | `str` | Formatted as string |
+| `IPv4` | `ipaddress.IPv4Address` | |
+| `IPv6` | `ipaddress.IPv6Address` | |
 | `Enum8`, `Enum16` | `str` | Enum value name |
 | `Bool` | `bool` | |
-| **Composite Types** |
-| `Array(T)` | `list[T]` | Elements converted recursively |
-| `Tuple(T1, T2, ...)` | `tuple[T1, T2, ...]` | Elements converted recursively |
-| `Map(K, V)` | `dict[K, V]` | Keys and values converted |
-| `Nested(...)` | `list[dict]` | Represented as array of structs |
-| **Type Modifiers** |
-| `Nullable(T)` | `T \| None` | Unwraps to base type |
+| **Composite** | | |
+| `Array(T)` | `list` | Elements converted recursively |
+| `Tuple(T1, T2, ...)` | `tuple` | Elements converted recursively |
+| `Map(K, V)` | `dict` | Keys and values converted |
+| **Modifiers** | | |
+| `Nullable(T)` | `T \| None` | Nulls become `None` |
 | `LowCardinality(T)` | `T` | Transparent wrapper |
-| **Other Types** |
-| `Nothing` | `None` | Always null |
-| `JSON` | `dict` | Experimental type |
+| **Other** | | |
+| `JSON` | `Any` | `json.loads()` result |
 
 **Python to ClickHouse conversion:**
 
 When sending data to ClickHouse (query parameters and inserts), Python types are automatically converted:
 
-- `datetime` → `YYYY-MM-DD HH:MM:SS` string format
-- `date` → `YYYY-MM-DD` string format
-- `UUID` → string representation
-- `Decimal` → string representation
-- `list` → array format `[1,2,3]`
-- `tuple` → tuple format `(1,2,3)` (for parameters) or array (for inserts)
-- `dict` → map format `{'key':'value'}`
+- `datetime` → `YYYY-MM-DD HH:MM:SS`
+- `date` → `YYYY-MM-DD`
+- `UUID` / `Decimal` → string representation
+- `list` → array literal (e.g. `[1,2,3]`)
+- `tuple` → tuple literal (e.g. `(1,2,3)`)
+- `dict` → map literal (e.g. `{'k':'v'}`)
 - `bytes` → UTF-8 decoded string
 - `None` → `NULL`
 - `bool` → `1` (True) or `0` (False)
