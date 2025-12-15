@@ -349,6 +349,10 @@ When sending data to ClickHouse (query parameters and inserts), Python types are
 
 Benchmark scripts live in [benchmarks/](benchmarks/).
 
+> [!NOTE]
+> Benchmarks always depend on machine and environment (CPU, RAM, kernel, ClickHouse version/config, network, etc).
+> The sample output was captured on a local machine with 6 CPU cores and 32 GB RAM, running ClickHouse 25.8 LTS.
+
 Latest results (AVG):
 
 - `clickhouse-connect (async)`: Avg: `433.35 ms (230,761 rows/s, 4.3 µs/row)`

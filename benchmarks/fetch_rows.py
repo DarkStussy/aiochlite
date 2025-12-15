@@ -250,37 +250,3 @@ async def main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-# Rows: 100000, rounds: 5, warmup: 2
-
-# IO benchmark (clickhouse-connect (async))
-# Round 1:   437.98 ms (228,323 rows/s, 4.4 µs/row)
-# Round 2:   432.25 ms (231,349 rows/s, 4.3 µs/row)
-# Round 3:   423.91 ms (235,898 rows/s, 4.2 µs/row)
-# Round 4:   433.05 ms (230,918 rows/s, 4.3 µs/row)
-# Round 5:   439.55 ms (227,505 rows/s, 4.4 µs/row)
-# Avg:        433.35 ms (230,761 rows/s, 4.3 µs/row)
-
-# IO benchmark (aiochlite (Row))
-# Round 1:   516.16 ms (193,740 rows/s, 5.2 µs/row)
-# Round 2:   515.42 ms (194,016 rows/s, 5.2 µs/row)
-# Round 3:   521.92 ms (191,600 rows/s, 5.2 µs/row)
-# Round 4:   521.53 ms (191,744 rows/s, 5.2 µs/row)
-# Round 5:   531.39 ms (188,186 rows/s, 5.3 µs/row)
-# Avg:        521.28 ms (191,834 rows/s, 5.2 µs/row)
-
-# IO benchmark (aiochlite (tuples))
-# Round 1:   457.12 ms (218,761 rows/s, 4.6 µs/row)
-# Round 2:   464.92 ms (215,091 rows/s, 4.6 µs/row)
-# Round 3:   457.96 ms (218,357 rows/s, 4.6 µs/row)
-# Round 4:   471.56 ms (212,062 rows/s, 4.7 µs/row)
-# Round 5:   454.70 ms (219,927 rows/s, 4.5 µs/row)
-# Avg:        461.25 ms (216,801 rows/s, 4.6 µs/row)
-
-# IO benchmark (aiochclient)
-# Round 1:  1560.18 ms (64,095 rows/s, 15.6 µs/row)
-# Round 2:  1550.37 ms (64,501 rows/s, 15.5 µs/row)
-# Round 3:  1557.22 ms (64,217 rows/s, 15.6 µs/row)
-# Round 4:  1579.76 ms (63,301 rows/s, 15.8 µs/row)
-# Round 5:  1546.31 ms (64,670 rows/s, 15.5 µs/row)
-# Avg:       1558.77 ms (64,153 rows/s, 15.6 µs/row)
