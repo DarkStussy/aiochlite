@@ -1,7 +1,7 @@
 from collections.abc import AsyncIterator
 from typing import Any, Mapping, Self, Sequence, TypedDict, Unpack
 
-from aiohttp import ClientSession, FormData
+from aiohttp import ClientSession, FormData, TCPConnector
 
 from .converters import to_json
 from .converters.rowbinary import (
@@ -28,6 +28,7 @@ class AsyncChClient:
 
     Args:
         url (str): ClickHouse server URL.
+        verify (bool): Verify SSL certificate.
         session (ClientSession | None): Optional aiohttp session to use.
         lazy_decode (bool): If True, decode row values lazily per cell (faster if you access only a subset of columns).
         user (str): ClickHouse username.
@@ -42,6 +43,7 @@ class AsyncChClient:
         self,
         url: str = "http://localhost:8123",
         *,
+        verify: bool = True,
         session: ClientSession | None = None,
         lazy_decode: bool = True,
         **kwargs: Unpack[ClientCoreOptions],
@@ -52,7 +54,7 @@ class AsyncChClient:
         self._core = ChClientCore(**kwargs)
 
         headers = self._core.build_headers()
-        session = session or ClientSession()
+        session = session or ClientSession(connector=TCPConnector(ssl=verify))
         session.headers.update(headers)
         self._http_client = HttpClient(session)
 
