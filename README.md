@@ -9,8 +9,6 @@
 
 ### Lightweight asynchronous ClickHouse client for Python built on aiohttp.
 
-> **Beta notice:** APIs and behavior may change; expect sharp edges while things settle.
-
 ## Table of Contents
 
 - [Features](#features)
