@@ -3,7 +3,6 @@ from functools import lru_cache
 from typing import Final
 from zoneinfo import ZoneInfo
 
-_TOP_LEVEL_COMMA_SPLIT_RE: Final[re.Pattern[str]] = re.compile(r",(?![^()]*\))")
 _DATETIME_TZ_RE: Final[re.Pattern[str]] = re.compile(
     r"DateTime(?:64)?\(\s*(?:\d+\s*,\s*)?'([^']+)'\s*\)",
     re.IGNORECASE,
@@ -39,7 +38,48 @@ def unwrap_wrappers(ch_type: str) -> str:
 
 @lru_cache(maxsize=256)
 def split_type_arguments(type_list: str) -> list[str]:
-    return [part.strip() for part in _TOP_LEVEL_COMMA_SPLIT_RE.split(type_list) if part.strip()]
+    parts: list[str] = []
+    buf: list[str] = []
+    depth = 0
+    in_quote = False
+
+    def _flush() -> None:
+        part = "".join(buf).strip()
+        if part:
+            parts.append(part)
+        buf.clear()
+
+    for ch in type_list:
+        if in_quote:
+            buf.append(ch)
+            if ch == "'":
+                in_quote = False
+            continue
+
+        if ch == "'":
+            in_quote = True
+            buf.append(ch)
+            continue
+
+        if ch == "(":
+            depth += 1
+            buf.append(ch)
+            continue
+
+        if ch == ")":
+            depth -= 1
+            buf.append(ch)
+            continue
+
+        if ch == "," and depth == 0:
+            _flush()
+            continue
+
+        buf.append(ch)
+
+    _flush()
+
+    return parts
 
 
 @lru_cache(maxsize=256)
