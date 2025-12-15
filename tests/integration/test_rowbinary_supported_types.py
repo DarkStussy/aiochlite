@@ -11,10 +11,10 @@ import pytest
 
 from aiochlite import AsyncChClient
 
+pytestmark = [pytest.mark.asyncio, pytest.mark.clickhouse]
 
-@pytest.mark.asyncio
-@pytest.mark.clickhouse
-async def test_rowbinary_supported_types(ch_client: AsyncChClient) -> None:
+
+async def test_rowbinary_supported_types(ch_client: AsyncChClient):
     query = r"""
         SELECT
             CAST(1 AS Bool) AS b,

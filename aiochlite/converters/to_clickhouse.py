@@ -26,7 +26,7 @@ def _escape_ch_string_literal(value: str) -> str:
 
 def _scalar_clickhouse_literal(value: Any) -> str | _MissingType:
     if value is None:
-        out: str | _MissingType = "null"
+        out: str | _MissingType = "NULL"
     else:
         value_type = type(value)
         if value_type is bool:
@@ -85,7 +85,7 @@ def to_clickhouse(value: Any) -> str | int | float:
         str | int | float: Converted value suitable for ClickHouse.
     """
     if value is None:
-        out: str | int | float = "NULL"
+        out: str | int | float = "\\N"
     else:
         value_type = type(value)
         if value_type is bool:

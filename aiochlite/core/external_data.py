@@ -1,5 +1,6 @@
-import json
 from typing import Any, Sequence
+
+from aiochlite.converters.to_json import to_json
 
 from .models import ExternalData, ExternalTable
 
@@ -15,7 +16,7 @@ def _to_json_compact_each_row_bytes(external_table: ExternalTable) -> bytes:
     if isinstance(rows[0], dict):
         rows = _transform_to_json_compact_each_row([s[0] for s in external_table.structure], rows)
 
-    data = "\n".join(json.dumps(list(r), ensure_ascii=False, separators=(",", ":")) for r in rows) + "\n"
+    data = "\n".join(to_json(list(r)) for r in rows) + "\n"
     return data.encode("utf-8")
 
 

@@ -17,13 +17,13 @@ def _state(session: pytest.Session) -> dict[str, bool]:
     return state
 
 
-def pytest_collection_modifyitems(session: pytest.Session, config: pytest.Config, items: list[pytest.Item]) -> None:
+def pytest_collection_modifyitems(session: pytest.Session, config: pytest.Config, items: list[pytest.Item]):
     """Run core tests first by moving integration tests to the end."""
     _state(session)  # ensure state is initialized
     items.sort(key=lambda item: _is_integration(item.nodeid))
 
 
-def pytest_runtest_setup(item: pytest.Item) -> None:
+def pytest_runtest_setup(item: pytest.Item):
     if _state(item.session)["core_failed"] and _is_integration(item.nodeid):
         pytest.skip("Skipping integration tests because core tests failed")
 

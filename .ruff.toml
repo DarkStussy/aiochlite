@@ -1,7 +1,7 @@
 line-length = 120
 target-version = "py312"
 
-include = ["aiochlite/**.py", "examples/**.py", "tests/**.py"]
+include = ["aiochlite/**.py", "tests/**.py"]
 
 [lint]
 select = [
@@ -11,13 +11,10 @@ select = [
 ignore = [
     "ARG",
     "ANN",
-    "ASYNC109",
     "B010",
     "BLE001",
     "COM812",
     "D",
-    "DTZ001",
-    "DTZ007",
     "EM101",
     "EM102",
     "FBT001",
@@ -31,7 +28,6 @@ ignore = [
     "RET505",
     "S101",
     "S110",
-    "S608",
     "SIM103",
     "SIM108",
     "SIM114",
@@ -46,8 +42,7 @@ ignore = [
 ]
 
 [lint.per-file-ignores]
-"tests/**" = ["A002", "C901", "INP001", "PLR0915", "PLR2004", "S101", "TID252"]
-"examples/**" = ["INP001", "T201"]
+"tests/**" = ["DTZ001", "PLR2004", "S608"]
 
 [format]
 quote-style = "double"

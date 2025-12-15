@@ -23,6 +23,7 @@
   - [Query Parameters](#query-parameters)
   - [Query Settings](#query-settings)
   - [External Tables](#external-tables)
+  - [JSON Type](#json-type)
   - [Error Handling](#error-handling)
   - [Custom Session](#custom-session)
   - [Enable Compression](#enable-compression)
@@ -227,6 +228,21 @@ result = await client.fetch(
 )
 ```
 
+### JSON Type
+
+```python
+await client.execute("DROP TABLE IF EXISTS json_demo")
+await client.execute("CREATE TABLE json_demo (id UInt32, doc JSON) ENGINE = Memory")
+
+await client.insert(
+    "json_demo",
+    [{"id": 1, "doc": {"a": 1, "b": [True, None, {"c": "x"}]}}],
+)
+
+row = await client.fetchone("SELECT id, doc FROM json_demo WHERE id = 1")
+print(row["doc"])  # Output: {"a": 1, "b": [True, None, {"c": "x"}]}
+```
+
 ### Error Handling
 
 ```python
@@ -257,6 +273,12 @@ async with AsyncChClient(url="http://localhost:8123", enable_compression=True) a
 ```
 
 ## Type Conversion
+
+aiochlite uses ClickHouse’s `RowBinaryWithNamesAndTypes` for result decoding:
+
+- `fetch`, `fetchone`, `fetchval`, `stream` automatically append `FORMAT RowBinaryWithNamesAndTypes` and decode rows into Python values.
+- Queries passed to these methods must not contain a `FORMAT ...` clause.
+- Use `execute()` for statements that don’t return rows.
 
 **Automatic type conversion from ClickHouse:**
 
@@ -304,7 +326,7 @@ When sending data to ClickHouse (query parameters and inserts), Python types are
 - `dict` → map literal (e.g. `{'k':'v'}`)
 - `bytes` → UTF-8 decoded string
 - `None` → `NULL`
-- `bool` → `1` (True) or `0` (False)
+- `bool` → `1`/`0` for query parameters, `true`/`false` inside container literals
 
 ## License
 

@@ -11,7 +11,7 @@ class TestToClickHouse:
 
     def test_basic_types(self):
         """Test basic type conversions."""
-        assert to_clickhouse(value=None) == "NULL"
+        assert to_clickhouse(value=None) == "\\N"
         assert to_clickhouse(value=True) == 1
         assert to_clickhouse(value=False) == 0
         assert to_clickhouse(42) == 42

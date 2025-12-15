@@ -4,6 +4,7 @@ version = "0.2.0"
 authors = [{ name = "darkstussy" }, ]
 description = "Lightweight asynchronous ClickHouse client for Python built on asyncio."
 readme = "README.md"
+license = { file = "LICENSE" }
 requires-python = ">=3.12"
 dependencies = [
     "aiohttp~=3.13.2"

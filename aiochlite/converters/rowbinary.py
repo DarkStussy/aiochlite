@@ -27,7 +27,7 @@ class _Reader(Protocol):
     def read_float64(self) -> float: ...
     def read_varuint(self) -> int: ...
     def read_string(self) -> str: ...
-    def skip(self, size: int) -> None: ...
+    def skip(self, size: int): ...
 
     @property
     def pos(self) -> int: ...
@@ -130,7 +130,7 @@ class _BinaryReader:
     def pos(self) -> int:
         return self._pos
 
-    def skip(self, size: int) -> None:
+    def skip(self, size: int):
         end = self._pos + size
         if end > len(self._data):
             raise ValueError("Unexpected end of data")
@@ -169,6 +169,7 @@ def _decimal_size(precision: int) -> int:
         return 16
     if precision <= 76:
         return 32
+
     raise ValueError(f"Unsupported Decimal precision: {precision}")
 
 
@@ -445,10 +446,38 @@ _FIXED_SIZES: dict[str, int] = {
 
 
 def _array_skipper(inner_type: str) -> Callable[[_Reader], None]:
+    inner_type = inner_type.strip()
+
+    if inner_type.startswith("LowCardinality(") and inner_type.endswith(")"):
+        return _array_skipper(inner_type[15:-1])
+
     inner_skip = _skipper_for_type(inner_type)
 
-    inner_unwrapped = unwrap_wrappers(inner_type)
-    inner_base = extract_base_type(inner_unwrapped)
+    # Nullable(T) in RowBinary is not fixed-size per element (null flag + optional value),
+    # so we must scan elements rather than multiplying by a fixed byte width.
+    if inner_type.startswith("Nullable(") and inner_type.endswith(")"):
+
+        def _skip_array_nullable(reader: _Reader):
+            count = reader.read_varuint()
+            for _ in range(count):
+                inner_skip(reader)
+
+        return _skip_array_nullable
+
+    fixed_skip = _fixed_width_array_skipper(inner_type)
+    if fixed_skip is not None:
+        return fixed_skip
+
+    def _skip_array(reader: _Reader):
+        count = reader.read_varuint()
+        for _ in range(count):
+            inner_skip(reader)
+
+    return _skip_array
+
+
+def _fixed_width_array_skipper(inner_type: str) -> Callable[[_Reader], None] | None:
+    inner_base = extract_base_type(inner_type)
 
     inner_fixed = _FIXED_SIZES.get(inner_base)
     if inner_fixed is not None:
@@ -458,19 +487,14 @@ def _array_skipper(inner_type: str) -> Callable[[_Reader], None]:
         return lambda reader: reader.skip(reader.read_varuint() * 8)
 
     if inner_base.startswith("Decimal"):
-        precision, _scale = _decimal_meta(inner_unwrapped)
+        precision, _ = _decimal_meta(inner_type)
         size = _decimal_size(precision)
         return lambda reader: reader.skip(reader.read_varuint() * size)
 
     if inner_base == "UUID":
         return lambda reader: reader.skip(reader.read_varuint() * 16)
 
-    def _skip_array(reader: _Reader) -> None:
-        count = reader.read_varuint()
-        for _ in range(count):
-            inner_skip(reader)
-
-    return _skip_array
+    return None
 
 
 def _map_skipper(ch_type: str) -> Callable[[_Reader], None]:
@@ -478,6 +502,17 @@ def _map_skipper(ch_type: str) -> Callable[[_Reader], None]:
     key_type, value_type = split_type_arguments(inner)
     key_skip = _skipper_for_type(key_type)
     value_skip = _skipper_for_type(value_type)
+
+    # Nullable values are not fixed-size per item, so fixed-size shortcuts are unsafe.
+    if key_type.strip().startswith("Nullable(") or value_type.strip().startswith("Nullable("):
+
+        def _skip_map(reader: _Reader):
+            count = reader.read_varuint()
+            for _ in range(count):
+                key_skip(reader)
+                value_skip(reader)
+
+        return _skip_map
 
     key_unwrapped = unwrap_wrappers(key_type)
     value_unwrapped = unwrap_wrappers(value_type)
@@ -495,7 +530,7 @@ def _map_skipper(ch_type: str) -> Callable[[_Reader], None]:
     if value_base == "UUID" and key_fixed is not None:
         return lambda reader: reader.skip(reader.read_varuint() * (key_fixed + 16))
 
-    def _skip_map(reader: _Reader) -> None:
+    def _skip_map(reader: _Reader):
         count = reader.read_varuint()
         for _ in range(count):
             key_skip(reader)
@@ -509,7 +544,7 @@ def _tuple_skipper(ch_type: str) -> Callable[[_Reader], None]:
     element_types = split_type_arguments(inner)
     skippers = tuple(_skipper_for_type(t) for t in element_types)
 
-    def _skip_tuple(reader: _Reader) -> None:
+    def _skip_tuple(reader: _Reader):
         for skip in skippers:
             skip(reader)
 
@@ -535,7 +570,7 @@ def _skipper_for_type(ch_type: str) -> Callable[[_Reader], None]:
     if ch_type.startswith("Nullable("):
         inner = _skipper_for_type(ch_type[9:-1])
 
-        def _skip_nullable(reader: _Reader) -> None:
+        def _skip_nullable(reader: _Reader):
             if reader.read_uint8():
                 return
             inner(reader)
@@ -631,7 +666,7 @@ class _StreamingReader:
         self._buf = bytearray()
         self._pos = 0
 
-    def feed(self, data: bytes) -> None:
+    def feed(self, data: bytes):
         if data:
             self._buf += data
 
@@ -640,7 +675,7 @@ class _StreamingReader:
         return self._pos
 
     @pos.setter
-    def pos(self, value: int) -> None:
+    def pos(self, value: int):
         self._pos = value
 
     @property
@@ -651,7 +686,7 @@ class _StreamingReader:
     def eof(self) -> bool:
         return self._pos >= len(self._buf)
 
-    def compact(self) -> None:
+    def compact(self):
         if self._pos and self._pos > 1_048_576:
             del self._buf[: self._pos]
             self._pos = 0
@@ -672,7 +707,7 @@ class _StreamingReader:
     def read_bytes(self, size: int) -> bytes:
         return self._read(size).tobytes()
 
-    def skip(self, size: int) -> None:
+    def skip(self, size: int):
         end = self._pos + size
         if end > len(self._buf):
             raise _NeedMoreData

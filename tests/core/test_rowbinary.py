@@ -30,7 +30,7 @@ def _encode_string(value: str) -> bytes:
     return _encode_varuint(len(encoded)) + encoded
 
 
-def test_parse_rowbinary_simple_types() -> None:
+def test_parse_rowbinary_simple_types():
     parts = [
         _encode_varuint(2),  # column count
         _encode_string("id"),
@@ -50,7 +50,7 @@ def test_parse_rowbinary_simple_types() -> None:
     assert list(rows) == [[1, "alice"], [2, "bob"]]
 
 
-def test_parse_rowbinary_lazy_only_decodes_accessed_fields() -> None:
+def test_parse_rowbinary_lazy_only_decodes_accessed_fields():
     parts = [
         _encode_varuint(2),  # column count
         _encode_string("id"),
@@ -70,7 +70,7 @@ def test_parse_rowbinary_lazy_only_decodes_accessed_fields() -> None:
     assert row[1] == "alice"
 
 
-def test_streaming_rowbinary_parser_splits_chunks() -> None:
+def test_streaming_rowbinary_parser_splits_chunks():
     parts = [
         _encode_varuint(2),
         _encode_string("id"),
@@ -100,7 +100,7 @@ def test_streaming_rowbinary_parser_splits_chunks() -> None:
     assert rows == [[1, "alice"], [2, "bob"]]
 
 
-def test_parse_rowbinary_date_and_decimal() -> None:
+def test_parse_rowbinary_date_and_decimal():
     base_day = (date(2025, 12, 14) - date(1970, 1, 1)).days
     parts = [
         _encode_varuint(2),
@@ -119,7 +119,7 @@ def test_parse_rowbinary_date_and_decimal() -> None:
     assert parsed == [[date(2025, 12, 14), Decimal("123.45")]]
 
 
-def test_parse_rowbinary_datetime64_array_uuid() -> None:
+def test_parse_rowbinary_datetime64_array_uuid():
     epoch_ms = int(datetime(2025, 12, 14, 10, 0, 0, tzinfo=ZoneInfo("UTC")).timestamp() * 1000)
     parts = [
         _encode_varuint(3),
@@ -147,7 +147,7 @@ def test_parse_rowbinary_datetime64_array_uuid() -> None:
     assert parsed[0][2] == UUID(int=1)
 
 
-def test_parse_rowbinary_map() -> None:
+def test_parse_rowbinary_map():
     parts = [
         _encode_varuint(1),
         _encode_string("m"),
@@ -167,7 +167,7 @@ def test_parse_rowbinary_map() -> None:
     assert parsed == [[{"a": 1, "b": -2}]]
 
 
-def test_parse_rowbinary_lowcardinality_wrapper() -> None:
+def test_parse_rowbinary_lowcardinality_wrapper():
     parts = [
         _encode_varuint(2),
         _encode_string("s"),
@@ -189,7 +189,7 @@ def test_parse_rowbinary_lowcardinality_wrapper() -> None:
     assert parsed == [["x", 123], ["y", None]]
 
 
-def test_parse_rowbinary_fixedstring_and_enums() -> None:
+def test_parse_rowbinary_fixedstring_and_enums():
     parts = [
         _encode_varuint(3),
         _encode_string("fs"),
@@ -211,7 +211,7 @@ def test_parse_rowbinary_fixedstring_and_enums() -> None:
     assert parsed == [["ab", "b", "x"]]
 
 
-def test_parse_rowbinary_ip_types() -> None:
+def test_parse_rowbinary_ip_types():
     ipv4 = ipaddress.IPv4Address("1.2.3.4")
     ipv6 = ipaddress.IPv6Address("2001:db8::1")
 
@@ -233,7 +233,7 @@ def test_parse_rowbinary_ip_types() -> None:
     assert parsed == [[ipv4, ipv6]]
 
 
-def test_parse_rowbinary_json_type_as_string() -> None:
+def test_parse_rowbinary_json_type_as_string():
     parts = [
         _encode_varuint(1),
         _encode_string("doc"),
