@@ -347,7 +347,7 @@ When sending data to ClickHouse (query parameters and inserts), Python types are
 
 ## Benchmarks
 
-Benchmark scripts live in `benchmarks/` (see `benchmarks/fetch_rows.py`).
+Benchmark scripts live in [benchmarks/](benchmarks/).
 
 Latest results (AVG):
 
