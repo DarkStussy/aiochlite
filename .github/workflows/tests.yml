@@ -71,4 +71,4 @@ jobs:
           echo "ClickHouse did not become ready" >&2
           exit 1
       - name: Run tests
-        run: pytest -v
+        run: pytest -s

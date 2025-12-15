@@ -26,8 +26,9 @@ def clickhouse_config() -> ChConfig:
 async def ch_client(clickhouse_config: ChConfig) -> AsyncIterator[AsyncChClient]:
     client = AsyncChClient(**clickhouse_config)
     try:
-        alive = await client.ping()
-    except Exception:
+        alive = await client.ping(raise_on_error=True)
+    except Exception as e:
+        print(f"ClickHouse ping failed with exception: {type(e).__name__}: {e}")  # noqa: T201
         alive = False
 
     if not alive:
