@@ -34,14 +34,9 @@ jobs:
     runs-on: ubuntu-latest
     services:
       clickhouse:
-        image: clickhouse/clickhouse-server:25.3
+        image: clickhouse/clickhouse-server:25.8
         ports:
           - 8123:8123
-        options: >-
-          --health-cmd "clickhouse-client --query 'SELECT 1'"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 12
     env:
       CLICKHOUSE_URL: http://localhost:8123
       CLICKHOUSE_USER: default
@@ -62,7 +57,7 @@ jobs:
           ruff format --check --diff aiochlite tests
       - name: Wait for ClickHouse
         run: |
-          for i in {1..30}; do
+          for i in {1..60}; do
             if curl -sSf http://localhost:8123/ping > /dev/null; then
               exit 0
             fi
