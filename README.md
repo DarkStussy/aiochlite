@@ -12,6 +12,7 @@
 ## Table of Contents
 
 - [Features](#features)
+- [Why aiochlite?](#why-aiochlite)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
   - [Basic Connection](#basic-connection)
@@ -26,6 +27,7 @@
   - [Custom Session](#custom-session)
   - [Enable Compression](#enable-compression)
 - [Type Conversion](#type-conversion)
+- [Benchmarks](#benchmarks)
 - [License](#license)
 
 ## Features
@@ -36,6 +38,17 @@
 - **Type conversion** - automatic conversion between Python and ClickHouse types
 - **Type-safe** - full type hints coverage
 - **Flexible** - custom sessions, compression, query settings
+
+## Why aiochlite?
+
+- **Real asyncio I/O**: built on `aiohttp` without wrapping blocking code in a thread pool.
+- **Fast decoding**: uses `RowBinaryWithNamesAndTypes` and lets you choose between `Row` wrappers (`fetch()`) and raw tuples (`fetch_rows()`).
+- **Small surface area**: minimal dependencies and a focused API for ClickHouse HTTP.
+
+Notes on alternatives (at the time of writing):
+- `clickhouse-connect` async client runs the synchronous driver in a `ThreadPoolExecutor` (good ergonomics, but not truly non-blocking asyncio I/O).
+- `aiochclient` appears unmaintained and is significantly slower in our IO benchmarks (see [Benchmarks](#benchmarks)).
+- Other clients/libraries often trade off either true non-blocking asyncio I/O or raw performance (e.g. sync-only APIs, JSON/text formats, or extra abstraction overhead).
 
 ## Installation
 
@@ -228,6 +241,12 @@ result = await client.fetch(
 
 ### JSON Type
 
+For ClickHouse versions where `JSON` is still considered experimental, enable it via client settings:
+
+```python
+client = AsyncChClient(settings={"allow_experimental_json_type": 1})
+```
+
 ```python
 await client.execute("DROP TABLE IF EXISTS json_demo")
 await client.execute("CREATE TABLE json_demo (id UInt32, doc JSON) ENGINE = Memory")
@@ -325,6 +344,17 @@ When sending data to ClickHouse (query parameters and inserts), Python types are
 - `bytes` → UTF-8 decoded string
 - `None` → `NULL`
 - `bool` → `1`/`0` for query parameters, `true`/`false` inside container literals
+
+## Benchmarks
+
+Benchmark scripts live in `benchmarks/` (see `benchmarks/fetch_rows.py`).
+
+Latest results (AVG):
+
+- `clickhouse-connect (async)`: Avg: `433.35 ms (230,761 rows/s, 4.3 µs/row)`
+- `aiochlite (Row)`: Avg: `521.28 ms (191,834 rows/s, 5.2 µs/row)`
+- `aiochlite (tuples)`: Avg: `461.25 ms (216,801 rows/s, 4.6 µs/row)`
+- `aiochclient`: Avg: `1558.77 ms (64,153 rows/s, 15.6 µs/row)`
 
 ## License
 

@@ -165,6 +165,23 @@ class AsyncChClient:
         async for row in self._stream(params, data):
             yield row
 
+    async def stream_rows(self, query: str, **kwargs: Unpack[QueryOptions]) -> AsyncIterator[tuple[Any, ...]]:
+        """Execute query and iterate over results as raw tuples (no `Row` wrapper).
+
+        Yields:
+            tuple: Query result rows.
+
+        Raises:
+            ChClientError: If query execution fails.
+        """
+        params, data = self._prepare_query(query, **kwargs)
+        byte_chunks = self._http_client.stream(self._url, params=params, data=data)
+        parser = RowBinaryWithNamesAndTypesStreamParser(byte_chunks, lazy=False)
+        await parser.read_header()
+
+        async for values in parser.rows():
+            yield tuple(values)
+
     async def fetch(self, query: str, **kwargs: Unpack[QueryOptions]) -> list[Row]:
         """Execute query and fetch all results.
 
@@ -176,6 +193,20 @@ class AsyncChClient:
         """
         params, data = self._prepare_query(query, **kwargs)
         return await self._fetch(params, data)
+
+    async def fetch_rows(self, query: str, **kwargs: Unpack[QueryOptions]) -> list[tuple[Any, ...]]:
+        """Execute query and fetch all results as raw tuples (no `Row` wrapper).
+
+        Returns:
+            list[tuple]: List of all result rows.
+
+        Raises:
+            ChClientError: If query execution fails.
+        """
+        params, data = self._prepare_query(query, **kwargs)
+        payload = await self._http_client.read(self._url, params=params, data=data)
+        _, _, rows = parse_rowbinary_with_names_and_types(payload)
+        return [tuple(values) for values in rows]
 
     async def fetchone(self, query: str, **kwargs: Unpack[QueryOptions]) -> Row | None:
         """Execute query and fetch first result row.

@@ -1,7 +1,7 @@
 line-length = 120
 target-version = "py312"
 
-include = ["aiochlite/**.py", "tests/**.py"]
+include = ["aiochlite/**.py", "benchmarks/**.py", "tests/**.py"]
 
 [lint]
 select = [
@@ -43,6 +43,7 @@ ignore = [
 
 [lint.per-file-ignores]
 "tests/**" = ["DTZ001", "PLR2004", "S608"]
+"benchmarks/**" = ["INP001", "S608", "T201"]
 
 [format]
 quote-style = "double"
