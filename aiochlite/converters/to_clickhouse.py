@@ -4,64 +4,74 @@ from typing import Any
 from uuid import UUID
 
 
-def _format_collection(value: tuple | list | dict) -> str:
-    """Format collection types to ClickHouse format."""
-    if isinstance(value, tuple):
-        items = ",".join(_to_clickhouse_format(item) for item in value)
-        return f"({items})"
-    if isinstance(value, list):
-        items = ",".join(_to_clickhouse_format(item) for item in value)
-        return f"[{items}]"
-
-    items = ",".join(f"'{k}':{_to_clickhouse_format(v)}" for k, v in value.items())
-    return f"{{{items}}}"
+class _MissingType:
+    __slots__ = ()
 
 
-def _to_clickhouse_format(value: Any) -> str:
-    """Convert value to ClickHouse format with single quotes for strings."""
+_MISSING = _MissingType()
+
+
+def _escape_ch_string_literal(value: str) -> str:
+    return (
+        value.replace("\\", "\\\\")
+        .replace("\b", "\\b")
+        .replace("\f", "\\f")
+        .replace("\r", "\\r")
+        .replace("\n", "\\n")
+        .replace("\t", "\\t")
+        .replace("\0", "\\0")
+        .replace("'", "\\'")
+    )
+
+
+def _scalar_clickhouse_literal(value: Any) -> str | _MissingType:
     if value is None:
-        return "null"
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, (int, float)):
-        return str(value)
-    if isinstance(value, str):
-        return f"'{value}'"
-    if isinstance(value, (tuple, list, dict)):
-        return _format_collection(value)
+        out: str | _MissingType = "null"
+    else:
+        value_type = type(value)
+        if value_type is bool:
+            out = "true" if value else "false"
+        elif value_type is int or value_type is float:
+            out = str(value)
+        elif value_type is str:
+            out = f"'{_escape_ch_string_literal(value)}'"
+        elif isinstance(value, datetime):
+            out = f"'{value.strftime('%Y-%m-%d %H:%M:%S')}'"
+        elif isinstance(value, date):
+            out = f"'{value.strftime('%Y-%m-%d')}'"
+        elif isinstance(value, (UUID, Decimal)):
+            out = f"'{value}'"
+        elif isinstance(value, bytes):
+            out = f"'{_escape_ch_string_literal(value.decode('utf-8'))}'"
+        else:
+            out = _MISSING
 
-    return str(value)
+    return out
 
 
-def _prepare_for_json(value: Any) -> Any:
-    """Prepare Python value for JSON serialization by converting special types."""
-    if value is None or isinstance(value, (bool, int, float, str)):
-        return value
-
+def _container_clickhouse_literal(value: Any) -> str | _MissingType:
     if isinstance(value, tuple):
-        return tuple(_prepare_for_json(item) for item in value)
-
+        return f"({','.join(_to_clickhouse_literal(item) for item in value)})"
     if isinstance(value, list):
-        return [_prepare_for_json(item) for item in value]
-
+        return f"[{','.join(_to_clickhouse_literal(item) for item in value)}]"
     if isinstance(value, dict):
-        return {k: _prepare_for_json(v) for k, v in value.items()}
+        items = ",".join(f"{_to_clickhouse_literal(str(k))}:{_to_clickhouse_literal(v)}" for k, v in value.items())
+        return f"{{{items}}}"
 
-    return _convert_special_type(value)
+    return _MISSING
 
 
-def _convert_special_type(value: Any) -> str:
-    """Convert special types to string representation."""
-    if isinstance(value, datetime):
-        return value.strftime("%Y-%m-%d %H:%M:%S")
-    if isinstance(value, date):
-        return value.strftime("%Y-%m-%d")
-    if isinstance(value, (UUID, Decimal)):
-        return str(value)
-    if isinstance(value, bytes):
-        return value.decode("utf-8")
+def _to_clickhouse_literal(value: Any) -> str:
+    """Render Python value as a ClickHouse literal (used for container params)."""
+    scalar = _scalar_clickhouse_literal(value)
+    if not isinstance(scalar, _MissingType):
+        return scalar
 
-    return str(value)
+    container = _container_clickhouse_literal(value)
+    if not isinstance(container, _MissingType):
+        return container
+
+    return f"'{_escape_ch_string_literal(str(value))}'"
 
 
 def to_clickhouse(value: Any) -> str | int | float:
@@ -75,16 +85,24 @@ def to_clickhouse(value: Any) -> str | int | float:
         str | int | float: Converted value suitable for ClickHouse.
     """
     if value is None:
-        return "NULL"
+        out: str | int | float = "NULL"
+    else:
+        value_type = type(value)
+        if value_type is bool:
+            out = 1 if value else 0
+        elif value_type is int or value_type is float or value_type is str:
+            out = value
+        elif isinstance(value, (list, tuple, dict)):
+            out = _to_clickhouse_literal(value)
+        elif isinstance(value, datetime):
+            out = value.strftime("%Y-%m-%d %H:%M:%S")
+        elif isinstance(value, date):
+            out = value.strftime("%Y-%m-%d")
+        elif isinstance(value, (UUID, Decimal)):
+            out = str(value)
+        elif isinstance(value, bytes):
+            out = value.decode("utf-8")
+        else:
+            out = str(value)
 
-    if isinstance(value, bool):
-        return 1 if value else 0
-
-    if isinstance(value, (int, float, str)):
-        return value
-
-    if isinstance(value, (list, tuple, dict)):
-        prepared = _prepare_for_json(value)
-        return _to_clickhouse_format(prepared)
-
-    return _convert_special_type(value)
+    return out
