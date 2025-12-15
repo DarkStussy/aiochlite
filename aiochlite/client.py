@@ -28,13 +28,13 @@ class AsyncChClient:
 
     Args:
         url (str): ClickHouse server URL.
-        verify (bool): Verify SSL certificate.
-        session (ClientSession | None): Optional aiohttp session to use.
-        lazy_decode (bool): If True, decode row values lazily per cell (faster if you access only a subset of columns).
         user (str): ClickHouse username.
         password (str): ClickHouse password.
         database (str): Default database name.
+        verify (bool): Verify SSL certificate.
+        lazy_decode (bool): If True, decode row values lazily per cell (faster if you access only a subset of columns).
         enable_compression (bool): Enable HTTP compression.
+        session (ClientSession | None): Optional aiohttp session to use.
     """
 
     __slots__ = ("_core", "_database", "_http_client", "_lazy_decode", "_url")
