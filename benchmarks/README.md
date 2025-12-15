@@ -16,8 +16,8 @@ What it measures:
 - Compares:
   - `aiochlite (Row)`: `AsyncChClient.fetch()` (returns `Row`)
   - `aiochlite (tuples)`: `AsyncChClient.fetch_rows()` (returns raw tuples)
-  - `clickhouse-connect (async)` (if installed)
-  - `aiochclient` (if installed)
+  - `clickhouse-connect (async)`
+  - `aiochclient`
 
 Run:
 
