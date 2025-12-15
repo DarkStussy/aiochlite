@@ -241,11 +241,8 @@ result = await client.fetch(
 
 ### JSON Type
 
-For ClickHouse versions where `JSON` is still considered experimental, enable it via client settings:
-
-```python
-client = AsyncChClient(settings={"allow_experimental_json_type": 1})
-```
+> [!NOTE]
+> For ClickHouse versions where `JSON` is still considered experimental, set `allow_experimental_json_type=1` via client settings.
 
 ```python
 await client.execute("DROP TABLE IF EXISTS json_demo")
