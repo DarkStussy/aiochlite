@@ -1,9 +1,14 @@
-import json
-from typing import Any, AsyncIterator, Mapping, Self, Sequence, TypedDict, Unpack
+from collections.abc import AsyncIterator
+from typing import Any, Mapping, Self, Sequence, TypedDict, Unpack
 
 from aiohttp import ClientSession, FormData
 
 from .converters import to_json
+from .converters.rowbinary import (
+    RowBinaryWithNamesAndTypesStreamParser,
+    parse_rowbinary_with_names_and_types,
+    parse_rowbinary_with_names_and_types_lazy,
+)
 from .core import ChClientCore, ClientCoreOptions, ExternalTable, Row, build_external_data
 from .exceptions import ChClientError
 from .http_client import HttpClient
@@ -24,21 +29,26 @@ class AsyncChClient:
     Args:
         url (str): ClickHouse server URL.
         session (ClientSession | None): Optional aiohttp session to use.
-        params (Mapping[str, Any] | None): Query parameters for substitution.
-        settings (Mapping[str, Any] | None): ClickHouse settings for the query.
-        external_tables (dict[str, ExternalTable] | None): External tables to attach.
+        lazy_decode (bool): If True, decode row values lazily per cell (faster if you access only a subset of columns).
+        user (str): ClickHouse username.
+        password (str): ClickHouse password.
+        database (str): Default database name.
+        enable_compression (bool): Enable HTTP compression.
     """
 
-    __slots__ = ("_core", "_database", "_http_client", "_url")
+    __slots__ = ("_core", "_database", "_http_client", "_lazy_decode", "_url")
 
     def __init__(
         self,
         url: str = "http://localhost:8123",
+        *,
         session: ClientSession | None = None,
+        lazy_decode: bool = True,
         **kwargs: Unpack[ClientCoreOptions],
     ):
         self._url = url
         self._database = kwargs.get("database", "default")
+        self._lazy_decode = lazy_decode
         self._core = ChClientCore(**kwargs)
 
         headers = self._core.build_headers()
@@ -91,7 +101,7 @@ class AsyncChClient:
             if "format" in query.lower():
                 raise ValueError("The query must not contain a FORMAT clause.")
 
-            query = f"{query} FORMAT JSONCompactEachRowWithNamesAndTypes"
+            query = f"{query} FORMAT RowBinaryWithNamesAndTypes"
 
         params = self._core.build_query_params(**kwargs)
 
@@ -110,6 +120,26 @@ class AsyncChClient:
             data = query
 
         return params, data
+
+    async def _stream(self, params: dict[str, Any], data: str | FormData) -> AsyncIterator[Row]:
+        byte_chunks = self._http_client.stream(self._url, params=params, data=data)
+        parser = RowBinaryWithNamesAndTypesStreamParser(byte_chunks, lazy=self._lazy_decode)
+        names, _ = await parser.read_header()
+
+        index = {name: idx for idx, name in enumerate(names)}
+        async for values in parser.rows():
+            yield Row(names, values, index=index)
+
+    async def _fetch(self, params: dict[str, Any], data: str | FormData) -> list[Row]:
+        payload = await self._http_client.read(self._url, params=params, data=data)
+        names, _, rows = (
+            parse_rowbinary_with_names_and_types_lazy(payload)
+            if self._lazy_decode
+            else parse_rowbinary_with_names_and_types(payload)
+        )
+
+        index = {name: idx for idx, name in enumerate(names)}
+        return [Row(names, values, index=index) for values in rows]
 
     async def execute(self, query: str, **kwargs: Unpack[QueryOptions]):
         """Execute query without returning results.
@@ -130,14 +160,8 @@ class AsyncChClient:
             ChClientError: If query execution fails.
         """
         params, data = self._prepare_query(query, **kwargs)
-        lines = self._http_client.stream(self._url, params=params, data=data)
-        names = json.loads(await anext(lines))
-        types = json.loads(await anext(lines))
-        converters = self._core.build_converters(types)
-
-        async for line in lines:
-            if row := self._core.parse_row(names, converters, line):
-                yield row
+        async for row in self._stream(params, data):
+            yield row
 
     async def fetch(self, query: str, **kwargs: Unpack[QueryOptions]) -> list[Row]:
         """Execute query and fetch all results.
@@ -148,7 +172,8 @@ class AsyncChClient:
         Raises:
             ChClientError: If query execution fails.
         """
-        return [row async for row in self.stream(query, **kwargs)]
+        params, data = self._prepare_query(query, **kwargs)
+        return await self._fetch(params, data)
 
     async def fetchone(self, query: str, **kwargs: Unpack[QueryOptions]) -> Row | None:
         """Execute query and fetch first result row.

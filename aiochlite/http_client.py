@@ -20,11 +20,17 @@ class HttpClient:
         async with self._session.post(url, params=params, data=data) as response:
             await _check_response(response)
 
-    async def stream(self, url: str, params: Mapping[str, str], *, data: Any = None) -> AsyncIterator[str]:
+    async def read(self, url: str, params: Mapping[str, str], *, data: Any = None) -> bytes:
         async with self._session.post(url, params=params, data=data) as response:
             await _check_response(response)
-            async for line in response.content:
-                yield line.decode(response.get_encoding())
+            return await response.read()
+
+    async def stream(self, url: str, params: Mapping[str, str], *, data: Any = None) -> AsyncIterator[bytes]:
+        async with self._session.post(url, params=params, data=data) as response:
+            await _check_response(response)
+
+            async for chunk in response.content.iter_chunked(262_144):
+                yield chunk
 
     async def close(self):
         await self._session.close()

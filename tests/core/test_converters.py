@@ -2,10 +2,8 @@ import json
 from datetime import date, datetime
 from decimal import Decimal
 from uuid import UUID
-from zoneinfo import ZoneInfo
 
-from aiochlite import from_clickhouse, to_clickhouse, to_json
-from aiochlite.core import ChClientCore
+from aiochlite.converters import to_clickhouse, to_json
 
 
 class TestToClickHouse:
@@ -53,133 +51,6 @@ class TestToClickHouse:
     def test_bytes(self):
         """Test bytes conversion."""
         assert to_clickhouse(b"hello") == "hello"
-
-
-class TestFromClickHouse:
-    """Tests for ClickHouse to Python type conversion."""
-
-    def test_datetime_conversion(self):
-        """Test DateTime conversion."""
-        result = from_clickhouse("2025-12-14 15:30:45", "DateTime")
-        assert isinstance(result, datetime)
-        assert result == datetime(2025, 12, 14, 15, 30, 45)
-
-    def test_datetime_with_timezone_conversion(self):
-        """Test DateTime conversion with timezone modifier."""
-        result = from_clickhouse("2025-12-14 15:30:45", "DateTime('UTC')")
-        assert isinstance(result, datetime)
-        assert result == datetime(2025, 12, 14, 15, 30, 45, tzinfo=ZoneInfo("UTC"))
-
-    def test_datetime64_with_timezone_conversion(self):
-        """Test DateTime64 conversion with timezone modifier."""
-        result = from_clickhouse("2025-12-14 15:30:45.123456", "Nullable(DateTime64(6, 'Europe/Sofia'))")
-        assert isinstance(result, datetime)
-        assert result == datetime(2025, 12, 14, 15, 30, 45, 123456, tzinfo=ZoneInfo("Europe/Sofia"))
-
-    def test_date_conversion(self):
-        """Test Date conversion."""
-        result = from_clickhouse("2025-12-14", "Date")
-        assert isinstance(result, date)
-        assert result == date(2025, 12, 14)
-
-    def test_uuid_conversion(self):
-        """Test UUID conversion."""
-        result = from_clickhouse("550e8400-e29b-41d4-a716-446655440000", "UUID")
-        assert isinstance(result, UUID)
-        assert result == UUID("550e8400-e29b-41d4-a716-446655440000")
-
-    def test_decimal_conversion(self):
-        """Test Decimal conversion."""
-        result = from_clickhouse("123.456", "Decimal(10, 2)")
-        assert isinstance(result, Decimal)
-        assert result == Decimal("123.456")
-
-    def test_decimal_variants(self):
-        """Test Decimal32/64/128 conversion."""
-        result = from_clickhouse("123.45", "Decimal32(2)")
-        assert isinstance(result, Decimal)
-        assert result == Decimal("123.45")
-
-    def test_nullable_types(self):
-        """Test Nullable wrapper."""
-        result = from_clickhouse("2025-12-14 15:30:45", "Nullable(DateTime)")
-        assert isinstance(result, datetime)
-
-        result = from_clickhouse(None, "Nullable(DateTime)")
-        assert result is None
-
-    def test_lowcardinality_types(self):
-        """Test LowCardinality wrapper."""
-        result = from_clickhouse("2025-12-14", "LowCardinality(Date)")
-        assert isinstance(result, date)
-
-    def test_basic_types(self):
-        """Test basic types that don't need conversion."""
-        assert from_clickhouse(42, "UInt32") == 42
-        assert from_clickhouse("test", "String") == "test"
-        assert from_clickhouse(3.14, "Float64") == 3.14
-
-    def test_tuple_conversion(self):
-        """Test Tuple conversion."""
-        result = from_clickhouse(["a", "b", "c"], "Tuple(String, String, String)")
-        assert isinstance(result, tuple)
-        assert result == ("a", "b", "c")
-
-    def test_tuple_with_types(self):
-        """Test Tuple with different types."""
-        result = from_clickhouse([1, "test", "2025-12-14"], "Tuple(UInt32, String, Date)")
-        assert isinstance(result, tuple)
-        assert result[0] == 1
-        assert result[1] == "test"
-        assert result[2] == date(2025, 12, 14)
-
-    def test_tuple_nested_types(self):
-        """Test Tuple with nested Tuple and Array types."""
-        ch_type = "Nullable(Tuple(String, Tuple(DateTime('UTC'), UInt8), Array(Nullable(Decimal(10, 2)))))"
-        result = from_clickhouse(
-            ["abc", ["2025-12-14 10:00:00", 5], ["1.23", None]],
-            ch_type,
-        )
-
-        assert isinstance(result, tuple)
-        assert result[0] == "abc"
-        assert result[1] == (datetime(2025, 12, 14, 10, 0, 0, tzinfo=ZoneInfo("UTC")), 5)
-        assert result[2] == [Decimal("1.23"), None]
-
-    def test_array_conversion(self):
-        """Test Array conversion."""
-        result = from_clickhouse([1, 2, 3], "Array(UInt32)")
-        assert isinstance(result, list)
-        assert result == [1, 2, 3]
-
-    def test_array_with_dates(self):
-        """Test Array with Date elements."""
-        result = from_clickhouse(["2025-12-14", "2025-12-15"], "Array(Date)")
-        assert isinstance(result, list)
-        assert all(isinstance(d, date) for d in result)
-        assert result == [date(2025, 12, 14), date(2025, 12, 15)]
-
-
-class TestCoreConversion:
-    def test_build_converters_caches_by_type(self):
-        core = ChClientCore()
-        converter_a = core.build_converters(["Date"])[0]
-        converter_b = core.build_converters(["Date"])[0]
-
-        assert converter_a is converter_b
-
-    def test_parse_row_with_prebuilt_converters(self):
-        core = ChClientCore()
-        names = ["d", "price"]
-        types = ["Date", "Decimal(10, 2)"]
-        converters = core.build_converters(types)
-        line = json.dumps(["2025-12-14", "123.45"])
-
-        row = core.parse_row(names, converters, line)
-
-        assert row is not None
-        assert row["d"] == date(2025, 12, 14)
-        assert row["price"] == Decimal("123.45")
 
 
 class TestToJson:

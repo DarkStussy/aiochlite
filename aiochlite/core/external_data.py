@@ -1,5 +1,3 @@
-"""Utilities for preparing external table data."""
-
 import json
 from typing import Any, Sequence
 
