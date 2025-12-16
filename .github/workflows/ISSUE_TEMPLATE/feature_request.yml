@@ -1,0 +1,81 @@
+name: Feature Request
+description: Suggest a new feature or enhancement for aiochlite
+title: "[FEATURE] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to suggest a new feature!
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Feature Description
+      description: A clear and concise description of the feature you'd like to see.
+      placeholder: "I would like aiochlite to support..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / Use Case
+      description: What problem does this feature solve? What use case does it enable?
+      placeholder: |
+        I'm trying to [describe your use case], but currently aiochlite doesn't support [missing functionality].
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution
+      description: How would you like this feature to work?
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: What alternative solutions or workarounds have you considered?
+      placeholder: "I've considered using... but it doesn't work because..."
+    validations:
+      required: false
+
+  - type: dropdown
+    id: breaking-changes
+    attributes:
+      label: Breaking Changes
+      description: Would this feature require breaking existing APIs?
+      options:
+        - "No breaking changes"
+        - "Minor breaking changes (could be mitigated with deprecation warnings)"
+        - "Major breaking changes (would require version bump)"
+        - "Not sure"
+    validations:
+      required: false
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional Context
+      description: |
+        - Similar features in other tools
+        - Performance concerns
+        - Related issues or PRs
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I have searched existing issues/PRs to avoid duplicates
+          required: true
+        - label: This feature aligns with aiochlite's async-first, lightweight design philosophy
+          required: true
+        - label: I am willing to contribute a PR (optional, but appreciated!)
+          required: false
