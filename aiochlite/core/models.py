@@ -25,7 +25,7 @@ class ExternalData(NamedTuple):
     content_type: str | None = None
 
 
-class Row:
+class Row(Mapping[str, Any]):
     """Query result row with column access by name or index."""
 
     __slots__ = ("_dict", "_index", "_names", "_values")
@@ -39,6 +39,7 @@ class Row:
     def _as_dict(self) -> dict[str, Any]:
         if self._dict is None:
             self._dict = dict(zip(self._names, self._values, strict=False))
+
         return self._dict
 
     def __getattr__(self, name: str) -> Any:
@@ -56,7 +57,7 @@ class Row:
             return self._values[self._index[key]]
         return self._as_dict()[key]
 
-    def __iter__(self) -> Iterator[Any]:
+    def __iter__(self) -> Iterator[str]:
         return iter(self._names)
 
     def __len__(self) -> int:
