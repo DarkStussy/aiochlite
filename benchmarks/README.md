@@ -4,7 +4,7 @@ This directory contains benchmark scripts for `aiochlite`.
 
 > [!NOTE]
 > Benchmarks always depend on machine and environment (CPU, RAM, kernel, ClickHouse version/config, network, etc).
-> The sample output in this document was captured on a local machine with 6 CPU cores and 32 GB RAM, running ClickHouse 25.8 LTS.
+> The sample output in this document was captured on a local machine with 6 CPU cores and 32 GB RAM, running ClickHouse 26.3 LTS.
 
 ## IO benchmark: fetch + decode
 
