@@ -1,7 +1,20 @@
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
+
+
+def format_timedelta(td: timedelta) -> str:
+    total_us = td.days * 86_400_000_000 + td.seconds * 1_000_000 + td.microseconds
+    sign = "-" if total_us < 0 else ""
+    total_us = abs(total_us)
+    total_seconds, micros = divmod(total_us, 1_000_000)
+    hours, rem = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(rem, 60)
+    if micros:
+        return f"{sign}{hours:02d}:{minutes:02d}:{seconds:02d}.{micros:06d}"
+
+    return f"{sign}{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 
 class _MissingType:
@@ -39,6 +52,8 @@ def _scalar_clickhouse_literal(value: Any) -> str | _MissingType:
             out = f"'{value.strftime('%Y-%m-%d %H:%M:%S')}'"
         elif isinstance(value, date):
             out = f"'{value.strftime('%Y-%m-%d')}'"
+        elif isinstance(value, timedelta):
+            out = f"'{format_timedelta(value)}'"
         elif isinstance(value, (UUID, Decimal)):
             out = f"'{value}'"
         elif isinstance(value, bytes):
@@ -98,6 +113,8 @@ def to_clickhouse(value: Any) -> str | int | float:
             out = value.strftime("%Y-%m-%d %H:%M:%S")
         elif isinstance(value, date):
             out = value.strftime("%Y-%m-%d")
+        elif isinstance(value, timedelta):
+            out = format_timedelta(value)
         elif isinstance(value, (UUID, Decimal)):
             out = str(value)
         elif isinstance(value, bytes):

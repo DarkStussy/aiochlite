@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -36,6 +36,9 @@ async def test_rowbinary_supported_types(ch_client: AsyncChClient):
             toDate32('1900-01-02') AS d32,
             toDateTime('2025-12-14 10:00:00', 'UTC') AS dt,
             toDateTime64('2025-12-14 13:30:45.123456', 6, 'Europe/Moscow') AS dt64,
+            CAST('01:01:01' AS Time) AS t,
+            CAST('-01:01:01' AS Time) AS t_neg,
+            CAST('01:01:01.123456' AS Time64(6)) AS t64,
             CAST('123.45' AS Decimal(10, 2)) AS dec,
             CAST('123.45' AS Decimal32(2)) AS dec32,
             CAST('123.45' AS Decimal64(2)) AS dec64,
@@ -80,6 +83,9 @@ async def test_rowbinary_supported_types(ch_client: AsyncChClient):
     assert row["d32"] == date(1900, 1, 2)
     assert row["dt"] == datetime(2025, 12, 14, 10, 0, 0, tzinfo=ZoneInfo("UTC"))
     assert row["dt64"] == datetime(2025, 12, 14, 13, 30, 45, 123456, tzinfo=ZoneInfo("Europe/Moscow"))
+    assert row["t"] == timedelta(seconds=3661)
+    assert row["t_neg"] == timedelta(seconds=-3661)
+    assert row["t64"] == timedelta(seconds=3661, microseconds=123456)
     assert row["dec"] == Decimal("123.45")
     assert row["dec32"] == Decimal("123.45")
     assert row["dec64"] == Decimal("123.45")

@@ -189,6 +189,29 @@ def _datetime_reader(ch_type: str) -> Callable[[_Reader], datetime]:
     return _read_dt
 
 
+def _time64_reader(ch_type: str) -> Callable[[_Reader], timedelta]:
+    inner = ch_type[ch_type.index("(") + 1 : ch_type.rindex(")")]
+    scale = int(inner.strip())
+
+    if scale <= 6:
+        multiplier = 10 ** (6 - scale)
+
+        @lru_cache(maxsize=4096)
+        def _td(ticks: int) -> timedelta:
+            return timedelta(microseconds=ticks * multiplier)
+    else:
+        divisor = 10 ** (scale - 6)
+
+        @lru_cache(maxsize=4096)
+        def _td(ticks: int) -> timedelta:
+            return timedelta(microseconds=ticks // divisor)
+
+    def _read_time64(reader: _Reader) -> timedelta:
+        return _td(reader.read_int64())
+
+    return _read_time64
+
+
 def _datetime64_reader(ch_type: str) -> Callable[[_Reader], datetime]:
     inner = ch_type[ch_type.index("(") + 1 : ch_type.rindex(")")]
     parts = [p.strip() for p in inner.split(",")]
@@ -359,6 +382,8 @@ _COMPLEX_READERS: dict[str, Callable[[str], Callable[[_Reader], Any]]] = {
     "Date32": lambda _: lambda r: _EPOCH_DATE + timedelta(days=r.read_int32()),
     "DateTime": _datetime_reader,
     "DateTime64": _datetime64_reader,
+    "Time": lambda _: lambda r: timedelta(seconds=r.read_int32()),
+    "Time64": _time64_reader,
     "Enum16": _enum_reader,
     "Enum8": _enum_reader,
     "FixedString": _fixedstring_reader,
@@ -438,6 +463,7 @@ _FIXED_SIZES: dict[str, int] = {
     "Date": 2,
     "Date32": 4,
     "DateTime": 4,
+    "Time": 4,
     "Enum8": 1,
     "Enum16": 2,
     "IPv4": 4,
@@ -483,7 +509,7 @@ def _fixed_width_array_skipper(inner_type: str) -> Callable[[_Reader], None] | N
     if inner_fixed is not None:
         return lambda reader: reader.skip(reader.read_varuint() * inner_fixed)
 
-    if inner_base == "DateTime64":
+    if inner_base in {"DateTime64", "Time64"}:
         return lambda reader: reader.skip(reader.read_varuint() * 8)
 
     if inner_base.startswith("Decimal"):
@@ -554,6 +580,7 @@ def _tuple_skipper(ch_type: str) -> Callable[[_Reader], None]:
 _COMPLEX_SKIPPERS: dict[str, Callable[[str], Callable[[_Reader], None]]] = {
     "Array": lambda ch_type: _array_skipper(ch_type[6:-1]),
     "DateTime64": lambda _: lambda reader: reader.skip(8),
+    "Time64": lambda _: lambda reader: reader.skip(8),
     "JSON": lambda _: lambda reader: reader.skip(reader.read_varuint()),
     "Map": _map_skipper,
     "String": lambda _: lambda reader: reader.skip(reader.read_varuint()),

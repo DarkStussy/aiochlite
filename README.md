@@ -197,7 +197,7 @@ result = await client.fetch(
 **Supported parameter types:**
 - Basic: `int`, `float`, `str`, `bool`, `None`
 - Collections: `list`, `tuple`, `dict`
-- Date/Time: `datetime`, `date`
+- Date/Time: `datetime`, `date`, `timedelta`
 - Special: `UUID`, `Decimal`, `bytes`
 
 See [Type Conversion](#type-conversion) for full type mapping details.
@@ -312,6 +312,8 @@ aiochlite uses ClickHouse’s `RowBinaryWithNamesAndTypes` for result decoding:
 | `Date32` | `date` | |
 | `DateTime` | `datetime` | `tzinfo` only if the type includes a timezone |
 | `DateTime64(P)` | `datetime` | `tzinfo` only if the type includes a timezone |
+| `Time` | `timedelta` | Signed seconds; supports values beyond 24h |
+| `Time64(P)` | `timedelta` | `timedelta` is microsecond-precision, so `P > 6` is truncated |
 | **Special** | | |
 | `UUID` | `UUID` | |
 | `IPv4` | `ipaddress.IPv4Address` | |
@@ -334,6 +336,7 @@ When sending data to ClickHouse (query parameters and inserts), Python types are
 
 - `datetime` → `YYYY-MM-DD HH:MM:SS`
 - `date` → `YYYY-MM-DD`
+- `timedelta` → `HH:MM:SS[.ffffff]` (signed; suitable for `Time` / `Time64`)
 - `UUID` / `Decimal` → string representation
 - `list` → array literal (e.g. `[1,2,3]`)
 - `tuple` → tuple literal (e.g. `(1,2,3)`)

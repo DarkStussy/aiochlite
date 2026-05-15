@@ -1,6 +1,6 @@
 import asyncio
 import ipaddress
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -145,6 +145,57 @@ def test_parse_rowbinary_datetime64_array_uuid():
     assert parsed[0][0] == datetime(2025, 12, 14, 10, 0, 0, tzinfo=ZoneInfo("UTC"))
     assert parsed[0][1] == [1, 2, 3]
     assert parsed[0][2] == UUID(int=1)
+
+
+def test_parse_rowbinary_time_and_time64():
+    parts = [
+        _encode_varuint(4),
+        _encode_string("t"),
+        _encode_string("t_neg"),
+        _encode_string("t64"),
+        _encode_string("t64_neg"),
+        _encode_string("Time"),
+        _encode_string("Time"),
+        _encode_string("Time64(3)"),
+        _encode_string("Time64(6)"),
+        (3661).to_bytes(4, "little", signed=True),
+        (-3661).to_bytes(4, "little", signed=True),
+        (3_661_123).to_bytes(8, "little", signed=True),
+        (-3_661_000_500).to_bytes(8, "little", signed=True),
+    ]
+
+    names, types, rows = parse_rowbinary_with_names_and_types(b"".join(parts))
+    parsed = list(rows)
+
+    assert names == ["t", "t_neg", "t64", "t64_neg"]
+    assert types == ["Time", "Time", "Time64(3)", "Time64(6)"]
+    assert parsed[0][0] == timedelta(seconds=3661)
+    assert parsed[0][1] == timedelta(seconds=-3661)
+    assert parsed[0][2] == timedelta(seconds=3661, microseconds=123_000)
+    assert parsed[0][3] == timedelta(seconds=-3661, microseconds=-500)
+
+
+def test_parse_rowbinary_time_in_array_and_nullable():
+    parts = [
+        _encode_varuint(2),
+        _encode_string("arr"),
+        _encode_string("nt64"),
+        _encode_string("Array(Time)"),
+        _encode_string("Nullable(Time64(3))"),
+        _encode_varuint(2),
+        (60).to_bytes(4, "little", signed=True),
+        (-60).to_bytes(4, "little", signed=True),
+        (0).to_bytes(1, "little"),
+        (1_500).to_bytes(8, "little", signed=True),
+    ]
+
+    names, types, rows = parse_rowbinary_with_names_and_types(b"".join(parts))
+    parsed = list(rows)
+
+    assert names == ["arr", "nt64"]
+    assert types == ["Array(Time)", "Nullable(Time64(3))"]
+    assert parsed[0][0] == [timedelta(seconds=60), timedelta(seconds=-60)]
+    assert parsed[0][1] == timedelta(seconds=1, microseconds=500_000)
 
 
 def test_parse_rowbinary_map():

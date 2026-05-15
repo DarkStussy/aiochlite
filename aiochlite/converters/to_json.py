@@ -1,8 +1,10 @@
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
+
+from .to_clickhouse import format_timedelta
 
 
 def _json_default(value: Any) -> str:
@@ -10,6 +12,8 @@ def _json_default(value: Any) -> str:
         return value.strftime("%Y-%m-%d %H:%M:%S")
     if isinstance(value, date):
         return value.strftime("%Y-%m-%d")
+    if isinstance(value, timedelta):
+        return format_timedelta(value)
     if isinstance(value, (UUID, Decimal)):
         return str(value)
     if isinstance(value, bytes):

@@ -1,5 +1,5 @@
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from uuid import UUID
 
@@ -40,6 +40,14 @@ class TestToClickHouse:
         d = date(2025, 12, 14)
         assert to_clickhouse(d) == "2025-12-14"
 
+    def test_timedelta(self):
+        """Test timedelta → Time/Time64 literal conversions."""
+        assert to_clickhouse(timedelta(seconds=3661)) == "01:01:01"
+        assert to_clickhouse(timedelta(seconds=-3661)) == "-01:01:01"
+        assert to_clickhouse(timedelta(seconds=1, microseconds=500_000)) == "00:00:01.500000"
+        assert to_clickhouse(timedelta(hours=100, minutes=30)) == "100:30:00"
+        assert to_clickhouse([timedelta(seconds=60), timedelta(seconds=-60)]) == "['00:01:00','-00:01:00']"
+
     def test_special_types(self):
         """Test UUID and Decimal conversions."""
         uid = UUID("550e8400-e29b-41d4-a716-446655440000")
@@ -79,6 +87,17 @@ class TestToJson:
         result = to_json(data)
         parsed = json.loads(result)
         assert parsed["birth_date"] == "2025-12-14"
+
+    def test_timedelta_in_dict(self):
+        """Test timedelta → Time/Time64 string in JSON payload."""
+        data = {
+            "tod": timedelta(seconds=3661),
+            "tod_neg": timedelta(seconds=-3661, microseconds=-500),
+        }
+        result = to_json(data)
+        parsed = json.loads(result)
+        assert parsed["tod"] == "01:01:01"
+        assert parsed["tod_neg"] == "-01:01:01.000500"
 
     def test_uuid_in_dict(self):
         """Test UUID conversion in dictionary."""
