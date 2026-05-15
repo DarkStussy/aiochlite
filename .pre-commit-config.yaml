@@ -7,11 +7,11 @@ repos:
       - id: check-yaml
       - id: trailing-whitespace
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.14.9
+    rev: v0.15.13
     hooks:
       - id: ruff-check
       - id: ruff-format
   - repo: https://github.com/DetachHead/basedpyright-pre-commit-mirror
-    rev: 1.36.1
+    rev: 1.39.4
     hooks:
       - id: basedpyright

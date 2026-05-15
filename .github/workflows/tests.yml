@@ -12,7 +12,7 @@ on:
       - ".pytest.toml"
       - ".ruff.toml"
       - "pyrightconfig.json"
-      - "requirements_dev.txt"
+      - "uv.lock"
   pull_request:
     branches:
       - main
@@ -24,7 +24,7 @@ on:
       - ".pytest.toml"
       - ".ruff.toml"
       - "pyrightconfig.json"
-      - "requirements_dev.txt"
+      - "uv.lock"
 
 jobs:
   test:
@@ -52,19 +52,20 @@ jobs:
       CLICKHOUSE_USER: test
       CLICKHOUSE_PASSWORD: test
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
-          python-version: ${{ matrix.python-version }}
+          enable-cache: true
       - name: Install dependencies
-        run: |
-          pip install -e .
-          pip install -r requirements_dev.txt
+        run: uv sync --python ${{ matrix.python-version }}
       - name: Lint code
         run: |
-          ruff check --output-format=github aiochlite tests
-          basedpyright aiochlite tests
-          ruff format --check --diff aiochlite tests
+          uv run ruff check --output-format=github aiochlite tests
+          uv run basedpyright aiochlite tests
+          uv run ruff format --check --diff aiochlite tests
       - name: Wait for ClickHouse
         run: |
           for i in {1..30}; do
@@ -76,4 +77,4 @@ jobs:
           echo "ClickHouse did not become ready" >&2
           exit 1
       - name: Run tests
-        run: pytest -q
+        run: uv run pytest -q
