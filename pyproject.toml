@@ -1,13 +1,13 @@
 [project]
 name = "aiochlite"
-version = "1.0.1"
+version = "1.0.2"
 authors = [{ name = "darkstussy" }, ]
 description = "Lightweight asynchronous ClickHouse client for Python built on asyncio."
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.12"
 dependencies = [
-    "aiohttp~=3.13.5"
+    "aiohttp~=3.13.0"
 ]
 classifiers = [
     "Programming Language :: Python :: 3",

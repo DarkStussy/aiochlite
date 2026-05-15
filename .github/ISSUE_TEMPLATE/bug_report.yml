@@ -89,7 +89,7 @@ body:
       label: Dependencies
       description: "Output of: `pip list | grep -E '(aiochlite|aiohttp)'`"
       placeholder: |
-        aiochlite     1.0.1
+        aiochlite     1.0.2
         aiohttp       3.13.5
       render: shell
     validations:

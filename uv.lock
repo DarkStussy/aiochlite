@@ -4,7 +4,7 @@ requires-python = ">=3.12"
 
 [[package]]
 name = "aiochlite"
-version = "1.0.1"
+version = "1.0.2"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
@@ -19,7 +19,7 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "aiohttp", specifier = "~=3.13.5" }]
+requires-dist = [{ name = "aiohttp", specifier = "~=3.13.0" }]
 
 [package.metadata.requires-dev]
 dev = [
