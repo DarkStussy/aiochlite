@@ -355,8 +355,8 @@ _PRIMITIVE_READERS: dict[str, Callable[[_Reader], Any]] = {
 
 _COMPLEX_READERS: dict[str, Callable[[str], Callable[[_Reader], Any]]] = {
     "Array": _array_reader,
-    "Date": lambda _: (lambda r: _EPOCH_DATE + timedelta(days=r.read_uint16())),
-    "Date32": lambda _: (lambda r: _EPOCH_DATE + timedelta(days=r.read_int32())),
+    "Date": lambda _: lambda r: _EPOCH_DATE + timedelta(days=r.read_uint16()),
+    "Date32": lambda _: lambda r: _EPOCH_DATE + timedelta(days=r.read_int32()),
     "DateTime": _datetime_reader,
     "DateTime64": _datetime64_reader,
     "Enum16": _enum_reader,
@@ -553,12 +553,12 @@ def _tuple_skipper(ch_type: str) -> Callable[[_Reader], None]:
 
 _COMPLEX_SKIPPERS: dict[str, Callable[[str], Callable[[_Reader], None]]] = {
     "Array": lambda ch_type: _array_skipper(ch_type[6:-1]),
-    "DateTime64": lambda _: (lambda reader: reader.skip(8)),
-    "JSON": lambda _: (lambda reader: reader.skip(reader.read_varuint())),
+    "DateTime64": lambda _: lambda reader: reader.skip(8),
+    "JSON": lambda _: lambda reader: reader.skip(reader.read_varuint()),
     "Map": _map_skipper,
-    "String": lambda _: (lambda reader: reader.skip(reader.read_varuint())),
+    "String": lambda _: lambda reader: reader.skip(reader.read_varuint()),
     "Tuple": _tuple_skipper,
-    "UUID": lambda _: (lambda reader: reader.skip(16)),
+    "UUID": lambda _: lambda reader: reader.skip(16),
 }
 
 
