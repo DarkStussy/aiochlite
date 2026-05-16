@@ -46,11 +46,6 @@
 - **Fast decoding**: uses `RowBinaryWithNamesAndTypes` and lets you choose between `Row` wrappers (`fetch()`) and raw tuples (`fetch_rows()`).
 - **Small surface area**: minimal dependencies and a focused API for ClickHouse HTTP.
 
-Notes on alternatives (at the time of writing):
-- `clickhouse-connect` async client runs the synchronous driver in a `ThreadPoolExecutor` (good ergonomics, but not truly non-blocking asyncio I/O).
-- `aiochclient` appears unmaintained and is significantly slower in our IO benchmarks (see [Benchmarks](#benchmarks)).
-- Other clients/libraries often trade off either true non-blocking asyncio I/O or raw performance (e.g. sync-only APIs, JSON/text formats, or extra abstraction overhead).
-
 ## Installation
 
 ```bash
