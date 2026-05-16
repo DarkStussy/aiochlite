@@ -38,4 +38,19 @@ dev = [
     "basedpyright==1.39.4",
     "pytest~=9.0.2",
     "pytest-asyncio~=1.3.0",
+    "pytest-cov~=7.1.0",
+]
+
+[tool.coverage.run]
+source = ["aiochlite"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "@overload",
 ]

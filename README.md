@@ -5,6 +5,7 @@
 [![PyPI - Version](https://img.shields.io/pypi/v/aiochlite?color=brightgreen)](https://pypi.org/project/aiochlite/)
 ![PyPI - Downloads](https://img.shields.io/pypi/dm/aiochlite?style=flat&color=brightgreen)
 ![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/darkstussy/aiochlite/tests.yml?style=flat&label=Tests)
+[![codecov](https://codecov.io/gh/darkstussy/aiochlite/branch/main/graph/badge.svg)](https://codecov.io/gh/darkstussy/aiochlite)
 ![GitHub last commit](https://img.shields.io/github/last-commit/darkstussy/aiochlite?color=brightgreen)
 
 ### Lightweight asynchronous ClickHouse client for Python built on aiohttp.
