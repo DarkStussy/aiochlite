@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.1.0 (2026-05-26)
+
+### Added
+- `AsyncChClient.fetch_parquet()` — execute a query and return the full result as
+  Parquet-encoded `bytes` (uses ClickHouse's native `FORMAT Parquet`).
+- `AsyncChClient.stream_parquet()` — same, but yields raw Parquet payload chunks via
+  `AsyncIterator[bytes]` for large result sets.
+
 ## 1.0.2 (2026-05-16)
 
 ### Added
