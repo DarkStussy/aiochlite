@@ -95,15 +95,15 @@ class AsyncChClient:
         self,
         query: str,
         *,
-        add_format: bool = True,
+        format_name: str | None = "RowBinaryWithNamesAndTypes",
         **kwargs: Unpack[QueryOptions],
     ) -> tuple[dict[str, Any], str | FormData]:
         """Prepare query for execution by adding FORMAT clause (when needed) and building params."""
-        if add_format:
+        if format_name is not None:
             if "format" in query.lower():
                 raise ValueError("The query must not contain a FORMAT clause.")
 
-            query = f"{query} FORMAT RowBinaryWithNamesAndTypes"
+            query = f"{query} FORMAT {format_name}"
 
         params = self._core.build_query_params(**kwargs)
 
@@ -149,7 +149,7 @@ class AsyncChClient:
         Raises:
             ChClientError: If query execution fails.
         """
-        params, data = self._prepare_query(query, add_format=False, **kwargs)
+        params, data = self._prepare_query(query, format_name=None, **kwargs)
         await self._http_client.post(self._url, params=params, data=data)
 
     async def stream(self, query: str, **kwargs: Unpack[QueryOptions]) -> AsyncIterator[Row]:
@@ -235,6 +235,31 @@ class AsyncChClient:
             return row.first()
 
         return None
+
+    async def fetch_parquet(self, query: str, **kwargs: Unpack[QueryOptions]) -> bytes:
+        """Execute query and fetch all results as Parquet-encoded bytes.
+
+        Returns:
+            bytes: Parquet-encoded result payload.
+
+        Raises:
+            ChClientError: If query execution fails.
+        """
+        params, data = self._prepare_query(query, format_name="Parquet", **kwargs)
+        return await self._http_client.read(self._url, params=params, data=data)
+
+    async def stream_parquet(self, query: str, **kwargs: Unpack[QueryOptions]) -> AsyncIterator[bytes]:
+        """Execute query and stream Parquet-encoded bytes in chunks.
+
+        Yields:
+            bytes: Parquet-encoded payload chunks.
+
+        Raises:
+            ChClientError: If query execution fails.
+        """
+        params, data = self._prepare_query(query, format_name="Parquet", **kwargs)
+        async for chunk in self._http_client.stream(self._url, params=params, data=data):
+            yield chunk
 
     async def insert(
         self,
