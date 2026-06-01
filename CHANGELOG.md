@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.0 (2026-06-01)
+
+### Added
+- Server timezone handling for `DateTime` / `DateTime64` via the `X-ClickHouse-Timezone`
+  response header. Columns with an explicit timezone are returned as timezone-aware
+  `datetime`; columns without one use the server-timezone wall-clock and are returned as
+  naive `datetime`. Works inside `Array`, `Nullable`, `LowCardinality`, `Tuple`, and `Map`.
+
 ## 1.1.0 (2026-05-26)
 
 ### Added
