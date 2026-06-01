@@ -35,7 +35,7 @@ class HttpClient:
         params: Mapping[str, str],
         *,
         data: Any = None,
-    ) -> AsyncGenerator[tuple[str | None, AsyncIterator[bytes]]]:
+    ) -> AsyncGenerator[tuple[str | None, AsyncIterator[bytes]], None]:
         async with self._session.post(url, params=params, data=data) as response:
             await _check_response(response)
 
