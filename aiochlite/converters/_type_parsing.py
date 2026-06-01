@@ -82,14 +82,21 @@ def split_type_arguments(type_list: str) -> list[str]:
     return parts
 
 
+@lru_cache(maxsize=64)
+def parse_timezone(name: str | None) -> ZoneInfo | None:
+    if not name:
+        return None
+
+    try:
+        return ZoneInfo(name)
+    except Exception:
+        return None
+
+
 @lru_cache(maxsize=256)
 def extract_timezone(ch_type: str) -> ZoneInfo | None:
     match = _DATETIME_TZ_RE.search(unwrap_wrappers(ch_type))
     if not match:
         return None
 
-    tz = match.group(1)
-    try:
-        return ZoneInfo(tz)
-    except Exception:
-        return None
+    return parse_timezone(match.group(1))

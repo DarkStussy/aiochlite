@@ -4,6 +4,7 @@ from typing import Any, Mapping, Self, Sequence, TypedDict, Unpack
 from aiohttp import ClientSession, FormData, TCPConnector
 
 from .converters import to_json
+from .converters._type_parsing import parse_timezone
 from .converters.rowbinary import (
     RowBinaryWithNamesAndTypesStreamParser,
     parse_rowbinary_with_names_and_types,
@@ -124,20 +125,25 @@ class AsyncChClient:
         return params, data
 
     async def _stream(self, params: dict[str, Any], data: str | FormData) -> AsyncIterator[Row]:
-        byte_chunks = self._http_client.stream(self._url, params=params, data=data)
-        parser = RowBinaryWithNamesAndTypesStreamParser(byte_chunks, lazy=self._lazy_decode)
-        names, _ = await parser.read_header()
+        async with self._http_client.stream(self._url, params=params, data=data) as (tz, byte_chunks):
+            parser = RowBinaryWithNamesAndTypesStreamParser(
+                byte_chunks,
+                lazy=self._lazy_decode,
+                server_tz=parse_timezone(tz),
+            )
+            names, _ = await parser.read_header()
 
-        index = {name: idx for idx, name in enumerate(names)}
-        async for values in parser.rows():
-            yield Row(names, values, index=index)
+            index = {name: idx for idx, name in enumerate(names)}
+            async for values in parser.rows():
+                yield Row(names, values, index=index)
 
     async def _fetch(self, params: dict[str, Any], data: str | FormData) -> list[Row]:
-        payload = await self._http_client.read(self._url, params=params, data=data)
+        payload, tz = await self._http_client.read(self._url, params=params, data=data)
+        server_tz = parse_timezone(tz)
         names, _, rows = (
-            parse_rowbinary_with_names_and_types_lazy(payload)
+            parse_rowbinary_with_names_and_types_lazy(payload, server_tz)
             if self._lazy_decode
-            else parse_rowbinary_with_names_and_types(payload)
+            else parse_rowbinary_with_names_and_types(payload, server_tz)
         )
 
         index = {name: idx for idx, name in enumerate(names)}
@@ -175,12 +181,12 @@ class AsyncChClient:
             ChClientError: If query execution fails.
         """
         params, data = self._prepare_query(query, **kwargs)
-        byte_chunks = self._http_client.stream(self._url, params=params, data=data)
-        parser = RowBinaryWithNamesAndTypesStreamParser(byte_chunks, lazy=False)
-        await parser.read_header()
+        async with self._http_client.stream(self._url, params=params, data=data) as (tz, byte_chunks):
+            parser = RowBinaryWithNamesAndTypesStreamParser(byte_chunks, lazy=False, server_tz=parse_timezone(tz))
+            await parser.read_header()
 
-        async for values in parser.rows():
-            yield tuple(values)
+            async for values in parser.rows():
+                yield tuple(values)
 
     async def fetch(self, query: str, **kwargs: Unpack[QueryOptions]) -> list[Row]:
         """Execute query and fetch all results.
@@ -204,8 +210,8 @@ class AsyncChClient:
             ChClientError: If query execution fails.
         """
         params, data = self._prepare_query(query, **kwargs)
-        payload = await self._http_client.read(self._url, params=params, data=data)
-        _, _, rows = parse_rowbinary_with_names_and_types(payload)
+        payload, tz = await self._http_client.read(self._url, params=params, data=data)
+        _, _, rows = parse_rowbinary_with_names_and_types(payload, parse_timezone(tz))
         return [tuple(values) for values in rows]
 
     async def fetchone(self, query: str, **kwargs: Unpack[QueryOptions]) -> Row | None:
@@ -246,7 +252,8 @@ class AsyncChClient:
             ChClientError: If query execution fails.
         """
         params, data = self._prepare_query(query, format_name="Parquet", **kwargs)
-        return await self._http_client.read(self._url, params=params, data=data)
+        payload, _ = await self._http_client.read(self._url, params=params, data=data)
+        return payload
 
     async def stream_parquet(self, query: str, **kwargs: Unpack[QueryOptions]) -> AsyncIterator[bytes]:
         """Execute query and stream Parquet-encoded bytes in chunks.
@@ -258,8 +265,9 @@ class AsyncChClient:
             ChClientError: If query execution fails.
         """
         params, data = self._prepare_query(query, format_name="Parquet", **kwargs)
-        async for chunk in self._http_client.stream(self._url, params=params, data=data):
-            yield chunk
+        async with self._http_client.stream(self._url, params=params, data=data) as (_, byte_chunks):
+            async for chunk in byte_chunks:
+                yield chunk
 
     async def insert(
         self,

@@ -103,3 +103,30 @@ async def test_rowbinary_supported_types(ch_client: AsyncChClient):
     assert row["n_s"] is None
     assert row["n_i32"] is None
     assert row["doc_json"] == json.loads('{"a":1,"b":[true,null]}')
+
+
+async def test_rowbinary_datetime_timezone(ch_client: AsyncChClient):
+    # Force the server (session) timezone so the naive wall-clock is deterministic regardless
+    # of how the ClickHouse instance is configured.
+    query = r"""
+        SELECT
+            toDateTime('2025-12-14 10:00:00', 'UTC') AS dt_tz,
+            CAST(toDateTime('2025-12-14 10:00:00', 'UTC') AS DateTime) AS dt_naive,
+            toDateTime64('2025-12-14 10:00:00.500', 3, 'UTC') AS dt64_tz,
+            CAST(toDateTime64('2025-12-14 10:00:00.500', 3, 'UTC') AS DateTime64(3)) AS dt64_naive
+    """
+
+    row = await ch_client.fetchone(query, settings={"session_timezone": "Europe/Moscow"})
+    assert row is not None
+
+    # Explicit timezone in the column type -> timezone-aware datetime.
+    assert row["dt_tz"] == datetime(2025, 12, 14, 10, 0, 0, tzinfo=ZoneInfo("UTC"))
+    assert row["dt_tz"].tzinfo is not None
+    assert row["dt64_tz"] == datetime(2025, 12, 14, 10, 0, 0, 500000, tzinfo=ZoneInfo("UTC"))
+    assert row["dt64_tz"].tzinfo is not None
+
+    # No explicit timezone -> naive datetime with the server-timezone wall clock (10:00 UTC = 13:00 MSK).
+    assert row["dt_naive"].tzinfo is None
+    assert row["dt_naive"] == datetime(2025, 12, 14, 13, 0, 0)
+    assert row["dt64_naive"].tzinfo is None
+    assert row["dt64_naive"] == datetime(2025, 12, 14, 13, 0, 0, 500000)

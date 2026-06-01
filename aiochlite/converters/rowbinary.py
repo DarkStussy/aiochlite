@@ -8,6 +8,7 @@ from decimal import Decimal
 from functools import lru_cache
 from typing import Any, Callable, Iterable, Protocol
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from ._type_parsing import extract_base_type, extract_timezone, split_type_arguments, unwrap_wrappers
 
@@ -176,12 +177,17 @@ def _decimal_size(precision: int) -> int:
 _EPOCH_DATE = date(1970, 1, 1)
 
 
-def _datetime_reader(ch_type: str) -> Callable[[_Reader], datetime]:
-    tz = extract_timezone(ch_type)
+def _datetime_reader(ch_type: str, server_tz: ZoneInfo | None) -> Callable[[_Reader], datetime]:
+    explicit_tz = extract_timezone(ch_type)
+    # With an explicit timezone the value is timezone-aware; otherwise the wall-clock time is
+    # computed in the server timezone but returned as a naive datetime (no tzinfo).
+    tz = explicit_tz or server_tz
+    strip_tz = explicit_tz is None
 
     @lru_cache(maxsize=4096)
     def _dt(ts: int) -> datetime:
-        return datetime.fromtimestamp(ts, tz=tz)
+        dt = datetime.fromtimestamp(ts, tz=tz)
+        return dt.replace(tzinfo=None) if strip_tz else dt
 
     def _read_dt(reader: _Reader) -> datetime:
         return _dt(reader.read_uint32())
@@ -212,11 +218,15 @@ def _time64_reader(ch_type: str) -> Callable[[_Reader], timedelta]:
     return _read_time64
 
 
-def _datetime64_reader(ch_type: str) -> Callable[[_Reader], datetime]:
+def _datetime64_reader(ch_type: str, server_tz: ZoneInfo | None) -> Callable[[_Reader], datetime]:
     inner = ch_type[ch_type.index("(") + 1 : ch_type.rindex(")")]
     parts = [p.strip() for p in inner.split(",")]
     scale = int(parts[0])
-    tz = extract_timezone(ch_type)
+    explicit_tz = extract_timezone(ch_type)
+    # With an explicit timezone the value is timezone-aware; otherwise the wall-clock time is
+    # computed in the server timezone but returned as a naive datetime (no tzinfo).
+    tz = explicit_tz or server_tz
+    strip_tz = explicit_tz is None
 
     @lru_cache(maxsize=4096)
     def _dt64(ticks: int) -> datetime:
@@ -225,7 +235,7 @@ def _datetime64_reader(ch_type: str) -> Callable[[_Reader], datetime]:
         if remainder:
             micros = remainder * (10 ** (6 - scale)) if scale <= 6 else remainder / (10 ** (scale - 6))
             dt = dt + timedelta(microseconds=micros)
-        return dt
+        return dt.replace(tzinfo=None) if strip_tz else dt
 
     def _read_dt64(reader: _Reader) -> datetime:
         return _dt64(reader.read_int64())
@@ -316,9 +326,9 @@ def _ipv6_reader(_: str) -> Callable[[_Reader], ipaddress.IPv6Address]:
     return _read_ipv6
 
 
-def _array_reader(ch_type: str) -> Callable[[_Reader], list[Any]]:
+def _array_reader(ch_type: str, server_tz: ZoneInfo | None) -> Callable[[_Reader], list[Any]]:
     inner_type = ch_type[6:-1]
-    inner = _reader_for_type(inner_type)
+    inner = _reader_for_type(inner_type, server_tz)
 
     def _read_array(reader: _Reader) -> list[Any]:
         return [inner(reader) for _ in range(reader.read_varuint())]
@@ -326,11 +336,11 @@ def _array_reader(ch_type: str) -> Callable[[_Reader], list[Any]]:
     return _read_array
 
 
-def _map_reader(ch_type: str) -> Callable[[_Reader], dict[Any, Any]]:
+def _map_reader(ch_type: str, server_tz: ZoneInfo | None) -> Callable[[_Reader], dict[Any, Any]]:
     inner = ch_type[ch_type.index("(") + 1 : ch_type.rindex(")")]
     key_type, value_type = split_type_arguments(inner)
-    key_reader = _reader_for_type(key_type)
-    value_reader = _reader_for_type(value_type)
+    key_reader = _reader_for_type(key_type, server_tz)
+    value_reader = _reader_for_type(value_type, server_tz)
 
     def _read_map(reader: _Reader) -> dict[Any, Any]:
         count = reader.read_varuint()
@@ -344,10 +354,10 @@ def _map_reader(ch_type: str) -> Callable[[_Reader], dict[Any, Any]]:
     return _read_map
 
 
-def _tuple_reader(ch_type: str) -> Callable[[_Reader], tuple[Any, ...]]:
+def _tuple_reader(ch_type: str, server_tz: ZoneInfo | None) -> Callable[[_Reader], tuple[Any, ...]]:
     inner = ch_type[6:-1]
     element_types = split_type_arguments(inner)
-    readers = tuple(_reader_for_type(t) for t in element_types)
+    readers = tuple(_reader_for_type(t, server_tz) for t in element_types)
 
     def _read_tuple(reader: _Reader) -> tuple[Any, ...]:
         return tuple(r(reader) for r in readers)
@@ -377,11 +387,8 @@ _PRIMITIVE_READERS: dict[str, Callable[[_Reader], Any]] = {
 }
 
 _COMPLEX_READERS: dict[str, Callable[[str], Callable[[_Reader], Any]]] = {
-    "Array": _array_reader,
     "Date": lambda _: lambda r: _EPOCH_DATE + timedelta(days=r.read_uint16()),
     "Date32": lambda _: lambda r: _EPOCH_DATE + timedelta(days=r.read_int32()),
-    "DateTime": _datetime_reader,
-    "DateTime64": _datetime64_reader,
     "Time": lambda _: lambda r: timedelta(seconds=r.read_int32()),
     "Time64": _time64_reader,
     "Enum16": _enum_reader,
@@ -389,20 +396,26 @@ _COMPLEX_READERS: dict[str, Callable[[str], Callable[[_Reader], Any]]] = {
     "FixedString": _fixedstring_reader,
     "IPv4": _ipv4_reader,
     "IPv6": _ipv6_reader,
-    "Map": _map_reader,
-    "Tuple": _tuple_reader,
     # ClickHouse UUID RowBinary is encoded as two UInt64 (hi, lo), each in little-endian.
     "UUID": lambda _: _uuid_reader,
 }
 
+_TZ_AWARE_READERS: dict[str, Callable[[str, ZoneInfo | None], Callable[[_Reader], Any]]] = {
+    "Array": _array_reader,
+    "DateTime": _datetime_reader,
+    "DateTime64": _datetime64_reader,
+    "Map": _map_reader,
+    "Tuple": _tuple_reader,
+}
+
 
 @lru_cache(maxsize=256)
-def _reader_for_type(ch_type: str) -> Callable[[_Reader], Any]:
+def _reader_for_type(ch_type: str, server_tz: ZoneInfo | None = None) -> Callable[[_Reader], Any]:
     if ch_type.startswith("LowCardinality("):
-        return _reader_for_type(ch_type[15:-1])
+        return _reader_for_type(ch_type[15:-1], server_tz)
 
     if ch_type.startswith("Nullable("):
-        inner = _reader_for_type(ch_type[9:-1])
+        inner = _reader_for_type(ch_type[9:-1], server_tz)
 
         def _read_nullable(reader: _Reader) -> Any:
             return None if reader.read_uint8() else inner(reader)
@@ -419,6 +432,10 @@ def _reader_for_type(ch_type: str) -> Callable[[_Reader], Any]:
     if base.startswith("Decimal"):
         return _decimal_reader(ch_type)
 
+    tz_handler = _TZ_AWARE_READERS.get(base)
+    if tz_handler is not None:
+        return tz_handler(ch_type, server_tz)
+
     handler = _COMPLEX_READERS.get(base)
     if handler is not None:
         return handler(ch_type)
@@ -426,9 +443,17 @@ def _reader_for_type(ch_type: str) -> Callable[[_Reader], Any]:
     raise ValueError(f"Unsupported RowBinary type: {ch_type}")
 
 
-def parse_rowbinary_with_names_and_types(data: bytes) -> tuple[list[str], list[str], Iterable[list[Any]]]:
+def parse_rowbinary_with_names_and_types(
+    data: bytes,
+    server_tz: ZoneInfo | None = None,
+) -> tuple[list[str], list[str], Iterable[list[Any]]]:
     """
     Parse RowBinaryWithNamesAndTypes payload and return header and row iterator.
+
+    Args:
+        data (bytes): RowBinaryWithNamesAndTypes payload.
+        server_tz (ZoneInfo | None): Fallback timezone for ``DateTime``/``DateTime64`` columns
+            that carry no explicit timezone (the ClickHouse server timezone).
 
     Returns:
         names: list of column names
@@ -439,7 +464,7 @@ def parse_rowbinary_with_names_and_types(data: bytes) -> tuple[list[str], list[s
     column_count = reader.read_varuint()
     names = [reader.read_string() for _ in range(column_count)]
     types = [reader.read_string() for _ in range(column_count)]
-    readers = [_reader_for_type(tp) for tp in types]
+    readers = [_reader_for_type(tp, server_tz) for tp in types]
 
     def _rows() -> Iterable[list[Any]]:
         while not reader.eof:
@@ -656,17 +681,22 @@ class RowBinaryLazyValues(Sequence[Any]):
 
 
 def parse_rowbinary_with_names_and_types_lazy(
-    data: bytes,
+    data: bytes, server_tz: ZoneInfo | None = None
 ) -> tuple[list[str], list[str], Iterable[RowBinaryLazyValues]]:
     """
     Parse RowBinaryWithNamesAndTypes payload and return rows with lazy per-cell decoding.
+
+    Args:
+        data (bytes): RowBinaryWithNamesAndTypes payload.
+        server_tz (ZoneInfo | None): Fallback timezone for ``DateTime``/``DateTime64`` columns
+            that carry no explicit timezone (the ClickHouse server timezone).
     """
     reader = _BinaryReader(data)
     column_count = reader.read_varuint()
     names = [reader.read_string() for _ in range(column_count)]
     types = [reader.read_string() for _ in range(column_count)]
     skippers = [_skipper_for_type(tp) for tp in types]
-    readers = [_reader_for_type(tp) for tp in types]
+    readers = [_reader_for_type(tp, server_tz) for tp in types]
     payload = memoryview(data)
 
     def _rows() -> Iterable[RowBinaryLazyValues]:
@@ -838,7 +868,7 @@ class _StreamingReader:
 
 
 class RowBinaryWithNamesAndTypesStreamParser:
-    def __init__(self, chunks: AsyncIterator[bytes], *, lazy: bool = False):
+    def __init__(self, chunks: AsyncIterator[bytes], *, lazy: bool = False, server_tz: ZoneInfo | None = None):
         self._chunks = chunks.__aiter__()
         self._reader = _StreamingReader()
         self._done = False
@@ -847,6 +877,7 @@ class RowBinaryWithNamesAndTypesStreamParser:
         self._readers: list[Callable[[_Reader], Any]] | None = None
         self._skippers: list[Callable[[_Reader], None]] | None = None
         self._lazy = lazy
+        self._server_tz = server_tz
 
     async def _fill(self) -> bool:
         try:
@@ -869,7 +900,7 @@ class RowBinaryWithNamesAndTypesStreamParser:
                 types = [self._reader.read_string() for _ in range(column_count)]
                 self._names = names
                 self._types = types
-                self._readers = [_reader_for_type(tp) for tp in types]
+                self._readers = [_reader_for_type(tp, self._server_tz) for tp in types]
                 if self._lazy:
                     self._skippers = [_skipper_for_type(tp) for tp in types]
                 else:

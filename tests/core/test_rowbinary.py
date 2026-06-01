@@ -147,6 +147,46 @@ def test_parse_rowbinary_datetime64_array_uuid():
     assert parsed[0][2] == UUID(int=1)
 
 
+def test_parse_rowbinary_datetime_server_timezone_fallback():
+    server_tz = ZoneInfo("Europe/Moscow")
+    ts = int(datetime(2025, 12, 14, 10, 0, 0, tzinfo=ZoneInfo("UTC")).timestamp())
+    epoch_ms = ts * 1000
+    parts = [
+        _encode_varuint(4),
+        _encode_string("dt"),
+        _encode_string("dt64"),
+        _encode_string("dt_tz"),
+        _encode_string("arr"),
+        # No explicit timezone -> should fall back to the server timezone.
+        _encode_string("DateTime"),
+        _encode_string("DateTime64(3)"),
+        # Explicit timezone must win over the server timezone.
+        _encode_string("DateTime('UTC')"),
+        # Nested DateTime should also receive the fallback.
+        _encode_string("Array(DateTime)"),
+        ts.to_bytes(4, "little"),
+        epoch_ms.to_bytes(8, "little", signed=True),
+        ts.to_bytes(4, "little"),
+        _encode_varuint(1),
+        ts.to_bytes(4, "little"),
+    ]
+
+    _, _, rows = parse_rowbinary_with_names_and_types(b"".join(parts), server_tz)
+    parsed = list(rows)
+
+    # No explicit timezone -> naive datetime with the server-timezone wall clock (as in aiochclient).
+    expected_naive = datetime(2025, 12, 14, 13, 0, 0)
+    assert parsed[0][0] == expected_naive
+    assert parsed[0][0].tzinfo is None
+    assert parsed[0][1] == expected_naive
+    assert parsed[0][1].tzinfo is None
+    # Explicit timezone -> aware datetime.
+    assert parsed[0][2] == datetime(2025, 12, 14, 10, 0, 0, tzinfo=ZoneInfo("UTC"))
+    assert parsed[0][2].tzinfo == ZoneInfo("UTC")
+    assert parsed[0][3] == [expected_naive]
+    assert parsed[0][3][0].tzinfo is None
+
+
 def test_parse_rowbinary_time_and_time64():
     parts = [
         _encode_varuint(4),
