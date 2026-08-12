@@ -4,8 +4,8 @@ __author__ = "darkstussy"
 
 __copyright__ = f"Copyright (c) 2025 {__author__}"
 
-from .client import AsyncChClient
+from .client import AsyncChClient, ExportFormat
 from .core import ExternalTable, Row
 from .exceptions import ChClientError
 
-__all__ = ("AsyncChClient", "ChClientError", "ExternalTable", "Row")
+__all__ = ("AsyncChClient", "ChClientError", "ExportFormat", "ExternalTable", "Row")

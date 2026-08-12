@@ -1,5 +1,7 @@
+import re
+import warnings
 from collections.abc import AsyncIterator
-from typing import Any, Mapping, Self, Sequence, TypedDict, Unpack
+from typing import Any, Literal, Mapping, Self, Sequence, TypedDict, Unpack
 
 from aiohttp import ClientSession, FormData, TCPConnector
 
@@ -13,6 +15,87 @@ from .converters.rowbinary import (
 from .core import ChClientCore, ClientCoreOptions, ExternalTable, Row, build_external_data
 from .exceptions import ChClientError
 from .http_client import HttpClient
+
+_COMMENT_OR_LITERAL_RE = re.compile(
+    r"'(?:\\.|[^'\\])*'"  # single-quoted string
+    r'|"(?:\\.|[^"\\])*"'  # double-quoted identifier
+    r"|`[^`]*`"  # backquoted identifier
+    r"|--[^\n]*"  # line comment
+    r"|/\*.*?\*/",  # block comment
+    re.DOTALL,
+)
+
+_FORMAT_CLAUSE_RE = re.compile(
+    r"\bformat\s+[a-z0-9_]+\s*(?:\bsettings\b.*)?;?\s*$",
+    re.IGNORECASE | re.DOTALL,
+)
+
+ExportFormat = Literal[
+    # Columnar / binary
+    "Parquet",
+    "Arrow",
+    "ArrowStream",
+    "ORC",
+    "Avro",
+    "Native",
+    "RowBinary",
+    "RowBinaryWithNames",
+    "RowBinaryWithNamesAndTypes",
+    # Separated values
+    "CSV",
+    "CSVWithNames",
+    "CSVWithNamesAndTypes",
+    "TSV",
+    "TSVWithNames",
+    "TSVWithNamesAndTypes",
+    "TabSeparated",
+    "TabSeparatedWithNames",
+    "TabSeparatedWithNamesAndTypes",
+    "TSKV",
+    "Values",
+    # JSON
+    "JSON",
+    "JSONStrings",
+    "JSONCompact",
+    "JSONColumns",
+    "JSONEachRow",
+    "JSONStringsEachRow",
+    "JSONObjectEachRow",
+    "JSONCompactEachRow",
+    "JSONCompactEachRowWithNames",
+    "JSONCompactEachRowWithNamesAndTypes",
+    # Human-readable / markup
+    "XML",
+    "Markdown",
+    "Vertical",
+    "Pretty",
+    "PrettyCompact",
+]
+"""ClickHouse output formats for `fetch_format()` / `stream_format()`."""
+
+
+def _has_format_clause(query: str) -> bool:
+    """Check whether the query already ends with a `FORMAT <name>` clause.
+
+    Comments and string/identifier literals are stripped first, and an optional trailing
+    `SETTINGS ...` clause (allowed by ClickHouse after `FORMAT`) is tolerated.
+
+    Args:
+        query (str): Query to inspect.
+
+    Returns:
+        bool: True if a trailing FORMAT clause is present.
+    """
+    return _FORMAT_CLAUSE_RE.search(_COMMENT_OR_LITERAL_RE.sub(" ", query)) is not None
+
+
+def _warn_deprecated(old: str, new: str):
+    """Emit a `DeprecationWarning` pointing from a legacy method to its replacement."""
+    warnings.warn(
+        f'{old}() is deprecated and will be removed in a future release, use {new}(query, "Parquet") instead.',
+        DeprecationWarning,
+        stacklevel=3,
+    )
 
 
 class QueryOptions(TypedDict, total=False):
@@ -101,7 +184,7 @@ class AsyncChClient:
     ) -> tuple[dict[str, Any], str | FormData]:
         """Prepare query for execution by adding FORMAT clause (when needed) and building params."""
         if format_name is not None:
-            if "format" in query.lower():
+            if _has_format_clause(query):
                 raise ValueError("The query must not contain a FORMAT clause.")
 
             query = f"{query} FORMAT {format_name}"
@@ -242,8 +325,53 @@ class AsyncChClient:
 
         return None
 
+    async def fetch_format(self, query: str, format_name: ExportFormat, **kwargs: Unpack[QueryOptions]) -> bytes:
+        """Execute query and fetch the whole result encoded in the given ClickHouse output format.
+
+        Args:
+            query (str): Query without a FORMAT clause.
+            format_name (ExportFormat): ClickHouse output format, e.g. `"Parquet"`, `"CSVWithNames"`, `"JSONEachRow"`.
+
+        Returns:
+            bytes: Raw result payload as produced by the server (decode text formats yourself).
+
+        Raises:
+            ValueError: If the query already contains a FORMAT clause.
+            ChClientError: If query execution fails.
+        """
+        params, data = self._prepare_query(query, format_name=format_name, **kwargs)
+        payload, _ = await self._http_client.read(self._url, params=params, data=data)
+        return payload
+
+    async def stream_format(
+        self,
+        query: str,
+        format_name: ExportFormat,
+        **kwargs: Unpack[QueryOptions],
+    ) -> AsyncIterator[bytes]:
+        """Execute query and stream the result encoded in the given ClickHouse output format.
+
+        Args:
+            query (str): Query without a FORMAT clause.
+            format_name (ExportFormat): ClickHouse output format, e.g. `"Parquet"`, `"CSVWithNames"`, `"JSONEachRow"`.
+
+        Yields:
+            bytes: Raw payload chunks as produced by the server.
+
+        Raises:
+            ValueError: If the query already contains a FORMAT clause.
+            ChClientError: If query execution fails.
+        """
+        params, data = self._prepare_query(query, format_name=format_name, **kwargs)
+        async with self._http_client.stream(self._url, params=params, data=data) as (_, byte_chunks):
+            async for chunk in byte_chunks:
+                yield chunk
+
     async def fetch_parquet(self, query: str, **kwargs: Unpack[QueryOptions]) -> bytes:
         """Execute query and fetch all results as Parquet-encoded bytes.
+
+        Deprecated:
+            Use `fetch_format(query, "Parquet")` instead.
 
         Returns:
             bytes: Parquet-encoded result payload.
@@ -251,12 +379,14 @@ class AsyncChClient:
         Raises:
             ChClientError: If query execution fails.
         """
-        params, data = self._prepare_query(query, format_name="Parquet", **kwargs)
-        payload, _ = await self._http_client.read(self._url, params=params, data=data)
-        return payload
+        _warn_deprecated("fetch_parquet", "fetch_format")
+        return await self.fetch_format(query, "Parquet", **kwargs)
 
-    async def stream_parquet(self, query: str, **kwargs: Unpack[QueryOptions]) -> AsyncIterator[bytes]:
+    def stream_parquet(self, query: str, **kwargs: Unpack[QueryOptions]) -> AsyncIterator[bytes]:
         """Execute query and stream Parquet-encoded bytes in chunks.
+
+        Deprecated:
+            Use `stream_format(query, "Parquet")` instead.
 
         Yields:
             bytes: Parquet-encoded payload chunks.
@@ -264,10 +394,8 @@ class AsyncChClient:
         Raises:
             ChClientError: If query execution fails.
         """
-        params, data = self._prepare_query(query, format_name="Parquet", **kwargs)
-        async with self._http_client.stream(self._url, params=params, data=data) as (_, byte_chunks):
-            async for chunk in byte_chunks:
-                yield chunk
+        _warn_deprecated("stream_parquet", "stream_format")
+        return self.stream_format(query, "Parquet", **kwargs)
 
     async def insert(
         self,

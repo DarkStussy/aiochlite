@@ -20,6 +20,7 @@
   - [Execute Query](#execute-query)
   - [Insert Data](#insert-data)
   - [Fetch Results](#fetch-results)
+  - [Export Formats](#export-formats)
   - [Query Parameters](#query-parameters)
   - [Query Settings](#query-settings)
   - [External Tables](#external-tables)
@@ -35,6 +36,7 @@
 
 - **Lightweight** - minimal dependencies, only aiohttp required
 - **Streaming support** - efficient processing of large datasets with `.stream()`
+- **Export formats** - raw Parquet / CSV / TSV / JSON / Arrow / ORC payloads via `.fetch_format()` and `.stream_format()`
 - **External tables** - advanced temporary data support
 - **Type conversion** - automatic conversion between Python and ClickHouse types
 - **Type-safe** - full type hints coverage
@@ -137,6 +139,44 @@ print(f"Total users: {count}")
 async for row in client.stream("SELECT * FROM users"):
     print(row.name)
 ```
+
+### Export Formats
+
+Get the raw server payload in any ClickHouse output format — Parquet, CSV, TSV, JSON, Arrow, ORC and more.
+Both methods return raw `bytes` exactly as produced by the server (decode text formats yourself).
+
+```python
+# Whole result at once
+parquet = await client.fetch_format("SELECT * FROM users", "Parquet")
+csv = (await client.fetch_format("SELECT * FROM users", "CSVWithNames")).decode()
+
+# Chunked streaming for large result sets
+with open("users.parquet", "wb") as f:
+    async for chunk in client.stream_format("SELECT * FROM users", "Parquet"):
+        f.write(chunk)
+
+# Query parameters, settings and external tables work as usual
+ndjson = await client.fetch_format(
+    "SELECT * FROM users WHERE id > {id:UInt32}",
+    "JSONEachRow",
+    params={"id": 10},
+)
+```
+
+**Supported formats** (`ExportFormat`):
+
+| Group | Formats |
+|-------|---------|
+| Columnar / binary | `Parquet`, `Arrow`, `ArrowStream`, `ORC`, `Avro`, `Native`, `RowBinary`, `RowBinaryWithNames`, `RowBinaryWithNamesAndTypes` |
+| Separated values | `CSV`, `CSVWithNames`, `CSVWithNamesAndTypes`, `TSV`, `TSVWithNames`, `TSVWithNamesAndTypes`, `TabSeparated`, `TabSeparatedWithNames`, `TabSeparatedWithNamesAndTypes`, `TSKV`, `Values` |
+| JSON | `JSON`, `JSONStrings`, `JSONCompact`, `JSONColumns`, `JSONEachRow`, `JSONStringsEachRow`, `JSONObjectEachRow`, `JSONCompactEachRow`, `JSONCompactEachRowWithNames`, `JSONCompactEachRowWithNamesAndTypes` |
+| Human-readable | `XML`, `Markdown`, `Vertical`, `Pretty`, `PrettyCompact` |
+
+Any other output format the server accepts can still be passed at runtime (type checkers will flag it).
+
+> [!WARNING]
+> `fetch_parquet()` and `stream_parquet()` are deprecated and will be removed in a future release.
+> Use `fetch_format(query, "Parquet")` and `stream_format(query, "Parquet")` instead.
 
 ### Query Parameters
 
