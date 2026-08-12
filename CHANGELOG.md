@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.3.0 (2026-08-12)
+
+### Added
+- `AsyncChClient.fetch_format(query, format_name)` — execute a query and return the whole result
+  as undecoded `bytes` in the requested ClickHouse output format (Parquet, CSV/TSV, JSON family,
+  Arrow, ORC, Native, RowBinary and others).
+- `AsyncChClient.stream_format(query, format_name)` — same, but yields payload chunks via
+  `AsyncIterator[bytes]`.
+- `ExportFormat` literal type listing the supported output formats, exported from `aiochlite`.
+
+### Changed
+- `aiohttp` requirement widened from `~=3.13.0` to `>=3.13,<3.15`.
+
+### Deprecated
+- `AsyncChClient.fetch_parquet()` — use `fetch_format(query, "Parquet")`.
+- `AsyncChClient.stream_parquet()` — use `stream_format(query, "Parquet")`.
+  Both emit a `DeprecationWarning` and will be removed in a future release.
+  `stream_parquet()` is no longer an async generator function: it returns an `AsyncIterator[bytes]`,
+  so the warning is emitted on call rather than on first iteration (`async for` usage is unchanged).
+
+### Fixed
+- The "query must not contain a FORMAT clause" check matched the substring `format` and rejected
+  queries using functions such as `formatDateTime()`. It now matches a trailing `FORMAT <name>`
+  clause (optionally followed by `SETTINGS ...`), ignoring comments and string/identifier literals.
+
 ## 1.2.0 (2026-06-01)
 
 ### Added
