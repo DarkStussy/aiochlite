@@ -387,14 +387,24 @@ Benchmark scripts live in [benchmarks/](benchmarks/).
 
 > [!NOTE]
 > Benchmarks always depend on machine and environment (CPU, RAM, kernel, ClickHouse version/config, network, etc).
-> The sample output was captured on a local machine with 6 CPU cores and 32 GB RAM, running ClickHouse 26.3 LTS.
+> These results were captured on a local machine with 8 CPU cores (16 threads) and 32 GB RAM, running
+> ClickHouse 26.3 LTS. Each client uses the configuration recommended by its documentation, including
+> the `aiohttp-speedups` extra for `aiochclient`.
 
-Latest results:
+Latest fetch-and-decode results for 100,000 rows (5 rounds, measured 2026-08-14):
 
-- `clickhouse-connect (async)`: Avg: `433.35 ms (230,761 rows/s, 4.3 µs/row)`
-- `aiochlite (Row)`: Avg: `521.28 ms (191,834 rows/s, 5.2 µs/row)`
-- `aiochlite (tuples)`: Avg: `461.25 ms (216,801 rows/s, 4.6 µs/row)`
-- `aiochclient`: Avg: `1558.77 ms (64,153 rows/s, 15.6 µs/row)`
+| Client | Average | Throughput | Time per row |
+| --- | ---: | ---: | ---: |
+| `clickhouse-connect` (async) | 156.57 ms | 638,704 rows/s | 1.6 µs |
+| `aiochlite` (tuples) | 287.75 ms | 347,524 rows/s | 2.9 µs |
+| `aiochlite` (`Row`, eager decoding) | 333.63 ms | 299,729 rows/s | 3.3 µs |
+| `aiochclient` | 350.22 ms | 285,532 rows/s | 3.5 µs |
+
+Versions: `aiochlite` 1.3.0, `clickhouse-connect` 1.7.1, `aiochclient` 2.7.0, Python 3.14.5,
+and ClickHouse 26.3.17.110.
+
+`clickhouse-connect` includes compiled C extensions. In contrast, `aiochlite` is pure Python and has a single
+dependency: `aiohttp`.
 
 ## License
 

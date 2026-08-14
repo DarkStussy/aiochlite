@@ -9,18 +9,20 @@ Environment variables:
 - CLICKHOUSE_USER (default: default)
 - CLICKHOUSE_PASSWORD (default: empty)
 - CLICKHOUSE_DATABASE (default: default)
-- BENCH_ROWS (default: 10000)
-- BENCH_ROUNDS (default: 3)
-- BENCH_WARMUP (default: 1)
+- BENCH_ROWS (default: 100000)
+- BENCH_ROUNDS (default: 5)
+- BENCH_WARMUP (default: 2)
 """
 
 import asyncio
 import gc
 import os
+import sys
 import time
 from collections.abc import Sequence
 from contextlib import asynccontextmanager
 from datetime import datetime
+from importlib.metadata import version
 from typing import Any, AsyncIterator, Protocol
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -36,9 +38,9 @@ CLICKHOUSE_PORT = int(os.getenv("CLICKHOUSE_PORT", default="8123"))
 CLICKHOUSE_USER = os.getenv("CLICKHOUSE_USER", default="default")
 CLICKHOUSE_PASSWORD = os.getenv("CLICKHOUSE_PASSWORD", default="")
 CLICKHOUSE_DATABASE = os.getenv("CLICKHOUSE_DATABASE", default="default")
-BENCH_ROWS = int(os.getenv("BENCH_ROWS", default="10000"))
-BENCH_ROUNDS = int(os.getenv("BENCH_ROUNDS", default="3"))
-BENCH_WARMUP = int(os.getenv("BENCH_WARMUP", default="1"))
+BENCH_ROWS = int(os.getenv("BENCH_ROWS", default="100000"))
+BENCH_ROUNDS = int(os.getenv("BENCH_ROUNDS", default="5"))
+BENCH_WARMUP = int(os.getenv("BENCH_WARMUP", default="2"))
 
 
 def _get_url():
@@ -138,7 +140,7 @@ async def _bench_aiochlite_rows(table: str) -> None:
     finally:
         await client.close()
 
-    _print_rounds("aiochlite (Row)", BENCH_ROWS, durations)
+    _print_rounds("aiochlite (Row, lazy_decode=False)", BENCH_ROWS, durations)
 
 
 async def _bench_aiochlite_tuples(table: str) -> None:
@@ -226,10 +228,19 @@ async def _bench_clickhouse_connect(table: str) -> None:
     _print_rounds("clickhouse-connect (async)", BENCH_ROWS, durations)
 
 
+async def _print_environment(client: aiochlite.AsyncChClient) -> None:
+    clients = ", ".join(f"{name} {version(name)}" for name in ("aiochlite", "aiochclient", "clickhouse-connect"))
+    python_version = ".".join(str(part) for part in sys.version_info[:3])
+    server_version: str = await client.fetchval("SELECT version()")
+    print(f"Clients: {clients}")
+    print(f"Python: {python_version}, ClickHouse: {server_version}")
+
+
 @asynccontextmanager
 async def create_table() -> AsyncIterator[str]:
     client = aiochlite.AsyncChClient(url=_get_url(), user=CLICKHOUSE_USER, password=CLICKHOUSE_PASSWORD)
     table = f"bench_io_{uuid4().hex}"
+    await _print_environment(client)
     print(f"Rows: {BENCH_ROWS}, rounds: {BENCH_ROUNDS}, warmup: {BENCH_WARMUP}")
     print(f"Table: {table}")
     try:
