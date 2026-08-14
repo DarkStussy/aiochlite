@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.4.0 (2026-08-14)
+
+### Changed
+- `lazy_decode` now defaults to `False`. Lazy decoding only pays off when a small share of the
+  selected columns is read, and costs up to 45% when all of them are; queries that select exactly
+  what they use were paying for it. Pass `lazy_decode=True` to keep the old behavior. Decoding
+  errors now surface from the query call rather than from cell access.
+- Faster decoding with `lazy_decode=False`, in `fetch()`, `fetch_rows()`, `stream()` and
+  `stream_rows()`. Rows of fixed-width columns gain the most, followed by rows with `String`
+  columns.
+- Faster lazy decoding (`lazy_decode=True`), for every row shape, and most of all when a row
+  consists of fixed-width columns or only some of its columns are read.
+
 ## 1.3.0 (2026-08-12)
 
 ### Added

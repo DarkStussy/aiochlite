@@ -118,9 +118,7 @@ def _print_rounds(label: str, rows: int, durations: list[float]) -> None:
 
 
 async def _bench_aiochlite_rows(table: str) -> None:
-    client = aiochlite.AsyncChClient(
-        url=_get_url(), user=CLICKHOUSE_USER, password=CLICKHOUSE_PASSWORD, lazy_decode=False
-    )
+    client = aiochlite.AsyncChClient(url=_get_url(), user=CLICKHOUSE_USER, password=CLICKHOUSE_PASSWORD)
     try:
         query = f"SELECT id, event_time, payload, prices FROM {table} ORDER BY id"
         for _ in range(BENCH_WARMUP):
@@ -140,13 +138,11 @@ async def _bench_aiochlite_rows(table: str) -> None:
     finally:
         await client.close()
 
-    _print_rounds("aiochlite (Row, lazy_decode=False)", BENCH_ROWS, durations)
+    _print_rounds("aiochlite (Row)", BENCH_ROWS, durations)
 
 
 async def _bench_aiochlite_tuples(table: str) -> None:
-    client = aiochlite.AsyncChClient(
-        url=_get_url(), user=CLICKHOUSE_USER, password=CLICKHOUSE_PASSWORD, lazy_decode=False
-    )
+    client = aiochlite.AsyncChClient(url=_get_url(), user=CLICKHOUSE_USER, password=CLICKHOUSE_PASSWORD)
     try:
         query = f"SELECT id, event_time, payload, prices FROM {table} ORDER BY id"
         for _ in range(BENCH_WARMUP):

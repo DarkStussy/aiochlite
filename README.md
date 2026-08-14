@@ -408,12 +408,12 @@ Latest fetch-and-decode results for 100,000 rows (5 rounds, measured 2026-08-14)
 
 | Client | Average | Throughput | Time per row |
 | --- | ---: | ---: | ---: |
-| `clickhouse-connect` (async) | 156.57 ms | 638,704 rows/s | 1.6 µs |
-| `aiochlite` (tuples) | 287.75 ms | 347,524 rows/s | 2.9 µs |
-| `aiochlite` (`Row`, eager decoding) | 333.63 ms | 299,729 rows/s | 3.3 µs |
-| `aiochclient` | 350.22 ms | 285,532 rows/s | 3.5 µs |
+| `clickhouse-connect` (async) | 161.19 ms | 620,388 rows/s | 1.6 µs |
+| `aiochlite` (tuples) | 275.79 ms | 362,598 rows/s | 2.8 µs |
+| `aiochlite` (`Row`) | 303.41 ms | 329,584 rows/s | 3.0 µs |
+| `aiochclient` | 363.21 ms | 275,324 rows/s | 3.6 µs |
 
-Versions: `aiochlite` 1.3.0, `clickhouse-connect` 1.7.1, `aiochclient` 2.7.0, Python 3.14.5,
+Versions: `aiochlite` 1.4.0, `clickhouse-connect` 1.7.1, `aiochclient` 2.7.0, Python 3.14.5,
 and ClickHouse 26.3.17.110.
 
 `clickhouse-connect` includes compiled C extensions. In contrast, `aiochlite` is pure Python and has a single

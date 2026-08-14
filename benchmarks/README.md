@@ -33,8 +33,7 @@ What it measures:
 - End-to-end `SELECT` fetch + decode time.
 - Data is generated on the server (`INSERT ... SELECT ... FROM numbers(...)`) to avoid measuring client-side inserts.
 - Compares:
-  - `aiochlite (Row, lazy_decode=False)`: `AsyncChClient.fetch()` (returns `Row`), in the client's default
-    decode mode. Because the benchmark reads every column, eager decoding is also the fairest comparison.
+  - `aiochlite (Row)`: `AsyncChClient.fetch()` (returns `Row`), in the client's default decode mode.
   - `aiochlite (tuples)`: `AsyncChClient.fetch_rows()` (returns raw tuples)
   - `clickhouse-connect (async)`
   - `aiochclient`
@@ -66,42 +65,42 @@ Environment variables:
 Measured 2026-08-14.
 
 ```
-Clients: aiochlite 1.3.0, aiochclient 2.7.0, clickhouse-connect 1.7.1
+Clients: aiochlite 1.4.0, aiochclient 2.7.0, clickhouse-connect 1.7.1
 Python: 3.14.5, ClickHouse: 26.3.17.110
 Rows: 100000, rounds: 5, warmup: 2
-Table: bench_io_27d4bb60762f49d5a463ff821caa203c
+Table: bench_io_07b81969c44742fc9840fbef04c9c0b1
 
 IO benchmark (clickhouse-connect (async))
-Round 1:   161.16 ms (620,506 rows/s, 1.6 µs/row)
-Round 2:   159.96 ms (625,158 rows/s, 1.6 µs/row)
-Round 3:   154.63 ms (646,686 rows/s, 1.5 µs/row)
-Round 4:   153.14 ms (653,014 rows/s, 1.5 µs/row)
-Round 5:   153.95 ms (649,576 rows/s, 1.5 µs/row)
-Avg:       156.57 ms (638,704 rows/s, 1.6 µs/row)
+Round 1:   160.30 ms (623,843 rows/s, 1.6 µs/row)
+Round 2:   162.90 ms (613,876 rows/s, 1.6 µs/row)
+Round 3:   159.24 ms (627,982 rows/s, 1.6 µs/row)
+Round 4:   159.96 ms (625,142 rows/s, 1.6 µs/row)
+Round 5:   163.55 ms (611,442 rows/s, 1.6 µs/row)
+Avg:       161.19 ms (620,388 rows/s, 1.6 µs/row)
 
-IO benchmark (aiochlite (Row, lazy_decode=False))
-Round 1:   333.75 ms (299,624 rows/s, 3.3 µs/row)
-Round 2:   346.22 ms (288,836 rows/s, 3.5 µs/row)
-Round 3:   333.19 ms (300,132 rows/s, 3.3 µs/row)
-Round 4:   331.88 ms (301,312 rows/s, 3.3 µs/row)
-Round 5:   323.14 ms (309,467 rows/s, 3.2 µs/row)
-Avg:       333.63 ms (299,729 rows/s, 3.3 µs/row)
+IO benchmark (aiochlite (Row))
+Round 1:   303.78 ms (329,189 rows/s, 3.0 µs/row)
+Round 2:   304.48 ms (328,433 rows/s, 3.0 µs/row)
+Round 3:   303.58 ms (329,407 rows/s, 3.0 µs/row)
+Round 4:   301.80 ms (331,348 rows/s, 3.0 µs/row)
+Round 5:   303.44 ms (329,555 rows/s, 3.0 µs/row)
+Avg:       303.41 ms (329,584 rows/s, 3.0 µs/row)
 
 IO benchmark (aiochlite (tuples))
-Round 1:   288.21 ms (346,972 rows/s, 2.9 µs/row)
-Round 2:   286.60 ms (348,920 rows/s, 2.9 µs/row)
-Round 3:   288.83 ms (346,220 rows/s, 2.9 µs/row)
-Round 4:   286.15 ms (349,471 rows/s, 2.9 µs/row)
-Round 5:   288.96 ms (346,064 rows/s, 2.9 µs/row)
-Avg:       287.75 ms (347,524 rows/s, 2.9 µs/row)
+Round 1:   275.18 ms (363,400 rows/s, 2.8 µs/row)
+Round 2:   275.40 ms (363,113 rows/s, 2.8 µs/row)
+Round 3:   277.56 ms (360,286 rows/s, 2.8 µs/row)
+Round 4:   273.58 ms (365,523 rows/s, 2.7 µs/row)
+Round 5:   277.22 ms (360,721 rows/s, 2.8 µs/row)
+Avg:       275.79 ms (362,598 rows/s, 2.8 µs/row)
 
 IO benchmark (aiochclient)
-Round 1:   344.93 ms (289,916 rows/s, 3.4 µs/row)
-Round 2:   348.51 ms (286,935 rows/s, 3.5 µs/row)
-Round 3:   358.83 ms (278,680 rows/s, 3.6 µs/row)
-Round 4:   350.65 ms (285,184 rows/s, 3.5 µs/row)
-Round 5:   348.19 ms (287,196 rows/s, 3.5 µs/row)
-Avg:       350.22 ms (285,532 rows/s, 3.5 µs/row)
+Round 1:   361.52 ms (276,613 rows/s, 3.6 µs/row)
+Round 2:   356.55 ms (280,469 rows/s, 3.6 µs/row)
+Round 3:   370.12 ms (270,183 rows/s, 3.7 µs/row)
+Round 4:   364.13 ms (274,625 rows/s, 3.6 µs/row)
+Round 5:   363.73 ms (274,929 rows/s, 3.6 µs/row)
+Avg:       363.21 ms (275,324 rows/s, 3.6 µs/row)
 ```
 
-A second run with the same configuration produced averages within approximately 2% of these results.
+Repeat runs of the same configuration produced averages within approximately 2% of these results.
