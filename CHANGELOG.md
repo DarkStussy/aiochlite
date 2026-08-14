@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.4.1 (2026-08-15)
+
+### Added
+- `py.typed` marker, so type checkers use the shipped annotations.
+- `aiochlite[aiohttp-speedups]` extra, forwarding to `aiohttp[speedups]`.
+
 ## 1.4.0 (2026-08-14)
 
 ### Changed

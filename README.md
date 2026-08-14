@@ -44,15 +44,36 @@
 
 ## Why aiochlite?
 
-- **Real asyncio I/O**: built on `aiohttp` without wrapping blocking code in a thread pool.
-- **Fast decoding**: uses `RowBinaryWithNamesAndTypes` and lets you choose between `Row` wrappers (`fetch()`) and raw tuples (`fetch_rows()`).
-- **Small surface area**: minimal dependencies and a focused API for ClickHouse HTTP.
+A small, pure-Python async client for ClickHouse over HTTP. Results are decoded from
+`RowBinaryWithNamesAndTypes` into either `Row` wrappers (`fetch()`) or raw tuples (`fetch_rows()`).
+
+- **One dependency**: `aiohttp`. aiochlite itself ships no compiled extensions.
+- **Server-side query parameters**: values are sent as ClickHouse `param_*` and never interpolated into the query text.
+- **Fast for pure Python**: in the [benchmark below](#benchmarks), `fetch_rows()` spends 24% less time than `aiochclient` and `fetch()` 16% less, against a client with C-accelerated parsing.
+- **Typed**: complete type hints for IDEs and static type checkers.
+- **Focused API**: ClickHouse over HTTP, without pandas, numpy, Arrow or Polars integrations.
+
+**Choosing a client.** For maximum throughput or DataFrame integrations, use the official
+[clickhouse-connect](https://github.com/ClickHouse/clickhouse-connect): it also has a real asyncio
+client, and in the same benchmark its compiled parser is 1.7x faster than `fetch_rows()` and 1.9x
+faster than `fetch()`. Reach for aiochlite when you want a small async client with a single
+dependency that just returns rows.
 
 ## Installation
 
 ```bash
 pip install aiochlite
 ```
+
+Optionally, pull in `aiohttp`'s own `speedups` extra (`aiodns`, `Brotli`, and `zstd` support on
+Python < 3.14):
+
+```bash
+pip install "aiochlite[aiohttp-speedups]"
+```
+
+It affects connection setup and, with `enable_compression=True`, the available response encodings.
+Row decoding is pure Python either way and runs at the same speed.
 
 ## Quick Start
 
@@ -139,6 +160,19 @@ print(f"Total users: {count}")
 async for row in client.stream("SELECT * FROM users"):
     print(row.name)
 ```
+
+Rows are decoded in full as they arrive. If a query selects many more columns than you actually
+read — a wide `SELECT *` where only a few fields are used — `lazy_decode=True` decodes each cell
+on first access instead:
+
+```python
+client = AsyncChClient("http://localhost:8123", lazy_decode=True)
+```
+
+In the benchmark shapes it started paying off below roughly a third of the selected columns and
+cost up to 45% when every column was read, but the break-even point depends on the column types
+and on how expensive the skipped ones are to decode. Leave it off unless your access pattern
+clearly matches, and measure your own query.
 
 ### Export Formats
 
@@ -395,12 +429,12 @@ Latest fetch-and-decode results for 100,000 rows (5 rounds, measured 2026-08-14)
 
 | Client | Average | Throughput | Time per row |
 | --- | ---: | ---: | ---: |
-| `clickhouse-connect` (async) | 156.57 ms | 638,704 rows/s | 1.6 µs |
-| `aiochlite` (tuples) | 287.75 ms | 347,524 rows/s | 2.9 µs |
-| `aiochlite` (`Row`, eager decoding) | 333.63 ms | 299,729 rows/s | 3.3 µs |
-| `aiochclient` | 350.22 ms | 285,532 rows/s | 3.5 µs |
+| `clickhouse-connect` (async) | 161.19 ms | 620,388 rows/s | 1.6 µs |
+| `aiochlite` (tuples) | 275.79 ms | 362,598 rows/s | 2.8 µs |
+| `aiochlite` (`Row`) | 303.41 ms | 329,584 rows/s | 3.0 µs |
+| `aiochclient` | 363.21 ms | 275,324 rows/s | 3.6 µs |
 
-Versions: `aiochlite` 1.3.0, `clickhouse-connect` 1.7.1, `aiochclient` 2.7.0, Python 3.14.5,
+Versions: `aiochlite` 1.4.0, `clickhouse-connect` 1.7.1, `aiochclient` 2.7.0, Python 3.14.5,
 and ClickHouse 26.3.17.110.
 
 `clickhouse-connect` includes compiled C extensions. In contrast, `aiochlite` is pure Python and has a single
