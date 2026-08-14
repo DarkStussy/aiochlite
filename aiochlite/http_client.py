@@ -19,7 +19,7 @@ class HttpClient:
         async with self._session.get(url, params=params) as response:
             await _check_response(response)
 
-    async def post(self, url: str, params: Mapping[str, str], *, data: Any = None) -> AsyncIterator[bytes] | None:
+    async def post(self, url: str, params: Mapping[str, str], *, data: Any = None):
         async with self._session.post(url, params=params, data=data) as response:
             await _check_response(response)
 

@@ -12,6 +12,7 @@ on:
       - ".pytest.toml"
       - ".ruff.toml"
       - "pyrightconfig.json"
+      - "mypy.ini"
       - "uv.lock"
   pull_request:
     branches:
@@ -24,6 +25,7 @@ on:
       - ".pytest.toml"
       - ".ruff.toml"
       - "pyrightconfig.json"
+      - "mypy.ini"
       - "uv.lock"
 
 jobs:
@@ -65,6 +67,7 @@ jobs:
         run: |
           uv run ruff check --output-format=github aiochlite tests
           uv run basedpyright aiochlite tests
+          uv run mypy
           uv run ruff format --check --diff aiochlite tests
       - name: Wait for ClickHouse
         run: |

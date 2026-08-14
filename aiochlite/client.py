@@ -197,6 +197,7 @@ class AsyncChClient:
 
         params = self._core.build_query_params(**kwargs)
 
+        data: str | FormData
         if external_tables := kwargs.get("external_tables"):
             data = FormData()
             for external_data in build_external_data(external_tables):

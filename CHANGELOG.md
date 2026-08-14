@@ -6,6 +6,9 @@
 - `py.typed` marker, so type checkers use the shipped annotations.
 - `aiochlite[aiohttp-speedups]` extra, forwarding to `aiohttp[speedups]`.
 
+### Fixed
+- Return type of the internal `HttpClient.post()`, which declared a value it never returned.
+
 ## 1.4.0 (2026-08-14)
 
 ### Changed

@@ -851,15 +851,14 @@ def _map_skipper(ch_type: str) -> Callable[[_Reader], None]:
     key_skip = _skipper_for_type(key_type)
     value_skip = _skipper_for_type(value_type)
 
+    def _skip_map(reader: _Reader):
+        count = reader.read_varuint()
+        for _ in range(count):
+            key_skip(reader)
+            value_skip(reader)
+
     # Nullable values are not fixed-size per item, so fixed-size shortcuts are unsafe.
     if key_type.strip().startswith("Nullable(") or value_type.strip().startswith("Nullable("):
-
-        def _skip_map(reader: _Reader):
-            count = reader.read_varuint()
-            for _ in range(count):
-                key_skip(reader)
-                value_skip(reader)
-
         return _skip_map
 
     key_unwrapped = unwrap_wrappers(key_type)
@@ -877,12 +876,6 @@ def _map_skipper(ch_type: str) -> Callable[[_Reader], None]:
         return lambda reader: reader.skip(reader.read_varuint() * (16 + value_fixed))
     if value_base == "UUID" and key_fixed is not None:
         return lambda reader: reader.skip(reader.read_varuint() * (key_fixed + 16))
-
-    def _skip_map(reader: _Reader):
-        count = reader.read_varuint()
-        for _ in range(count):
-            key_skip(reader)
-            value_skip(reader)
 
     return _skip_map
 
@@ -934,14 +927,13 @@ def _skipper_for_type(ch_type: str) -> Callable[[_Reader], None]:
         return lambda reader: reader.skip(size)
 
     if base == "FixedString":
-        inner = ch_type[ch_type.index("(") + 1 : ch_type.rindex(")")]
-        fixed_size = int(inner.strip())
+        fixed_size = int(ch_type[ch_type.index("(") + 1 : ch_type.rindex(")")].strip())
         return lambda reader: reader.skip(fixed_size)
 
     if base.startswith("Decimal"):
         precision, _scale = _decimal_meta(ch_type)
-        size = _decimal_size(precision)
-        return lambda reader: reader.skip(size)
+        decimal_size = _decimal_size(precision)
+        return lambda reader: reader.skip(decimal_size)
 
     handler = _COMPLEX_SKIPPERS.get(base)
     if handler is not None:
@@ -1013,7 +1005,7 @@ class RowBinaryLazyValues(Sequence[Any]):
     def __len__(self) -> int:
         return len(self._offsets)
 
-    def __getitem__(self, idx: int) -> Any:
+    def __getitem__(self, idx: int) -> Any:  # type: ignore[override]
         if idx < 0:
             idx += len(self._offsets)
         value = self._cache[idx]
