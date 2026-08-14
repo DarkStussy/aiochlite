@@ -3,7 +3,7 @@
 ![Python](https://img.shields.io/badge/python-3.12%2B-blue)
 ![GitHub License](https://img.shields.io/github/license/darkstussy/aiochlite?color=brightgreen)
 [![PyPI - Version](https://img.shields.io/pypi/v/aiochlite?color=brightgreen)](https://pypi.org/project/aiochlite/)
-![PyPI - Downloads](https://img.shields.io/pypi/dm/aiochlite?style=flat&color=brightgreen)
+[![PyPI - Downloads](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fshieldcn.dev%2Fpypi%2Fdm%2Faiochlite.json&query=%24.value&label=downloads&color=brightgreen&style=flat)](https://pypistats.org/packages/aiochlite)
 ![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/darkstussy/aiochlite/tests.yml?style=flat&label=Tests)
 [![codecov](https://codecov.io/gh/darkstussy/aiochlite/branch/main/graph/badge.svg)](https://codecov.io/gh/darkstussy/aiochlite)
 ![GitHub last commit](https://img.shields.io/github/last-commit/darkstussy/aiochlite?color=brightgreen)
@@ -139,19 +139,6 @@ print(f"Total users: {count}")
 async for row in client.stream("SELECT * FROM users"):
     print(row.name)
 ```
-
-Rows are decoded in full as they arrive. If a query selects many more columns than you actually
-read — a wide `SELECT *` where only a few fields are used — `lazy_decode=True` decodes each cell
-on first access instead:
-
-```python
-client = AsyncChClient("http://localhost:8123", lazy_decode=True)
-```
-
-In the benchmark shapes it started paying off below roughly a third of the selected columns and
-cost up to 45% when every column was read, but the break-even point depends on the column types
-and on how expensive the skipped ones are to decode. Leave it off unless your access pattern
-clearly matches, and measure your own query.
 
 ### Export Formats
 
@@ -408,12 +395,12 @@ Latest fetch-and-decode results for 100,000 rows (5 rounds, measured 2026-08-14)
 
 | Client | Average | Throughput | Time per row |
 | --- | ---: | ---: | ---: |
-| `clickhouse-connect` (async) | 161.19 ms | 620,388 rows/s | 1.6 µs |
-| `aiochlite` (tuples) | 275.79 ms | 362,598 rows/s | 2.8 µs |
-| `aiochlite` (`Row`) | 303.41 ms | 329,584 rows/s | 3.0 µs |
-| `aiochclient` | 363.21 ms | 275,324 rows/s | 3.6 µs |
+| `clickhouse-connect` (async) | 156.57 ms | 638,704 rows/s | 1.6 µs |
+| `aiochlite` (tuples) | 287.75 ms | 347,524 rows/s | 2.9 µs |
+| `aiochlite` (`Row`, eager decoding) | 333.63 ms | 299,729 rows/s | 3.3 µs |
+| `aiochclient` | 350.22 ms | 285,532 rows/s | 3.5 µs |
 
-Versions: `aiochlite` 1.4.0, `clickhouse-connect` 1.7.1, `aiochclient` 2.7.0, Python 3.14.5,
+Versions: `aiochlite` 1.3.0, `clickhouse-connect` 1.7.1, `aiochclient` 2.7.0, Python 3.14.5,
 and ClickHouse 26.3.17.110.
 
 `clickhouse-connect` includes compiled C extensions. In contrast, `aiochlite` is pure Python and has a single
