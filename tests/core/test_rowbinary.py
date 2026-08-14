@@ -5,6 +5,9 @@ from decimal import Decimal
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
+import pytest
+
+from aiochlite.converters import rowbinary
 from aiochlite.converters.rowbinary import (
     RowBinaryWithNamesAndTypesStreamParser,
     parse_rowbinary_with_names_and_types,
@@ -338,3 +341,149 @@ def test_parse_rowbinary_json_type_as_string():
     assert names == ["doc"]
     assert types == ["JSON"]
     assert parsed == [[{"a": 1, "b": [True, None]}]]
+
+
+def _fixed_width_parts() -> tuple[bytes, list[tuple[bytes, bytes]]]:
+    """Header plus per-row (fixed-width part, trailing String) pairs."""
+    base_day = (date(2025, 12, 14) - date(1970, 1, 1)).days
+    header = b"".join(
+        [
+            _encode_varuint(7),
+            _encode_string("id"),
+            _encode_string("delta"),
+            _encode_string("flag"),
+            _encode_string("ts"),
+            _encode_string("day"),
+            _encode_string("grade"),
+            _encode_string("name"),
+            _encode_string("UInt64"),
+            _encode_string("Int32"),
+            _encode_string("Bool"),
+            _encode_string("DateTime('UTC')"),
+            _encode_string("Date"),
+            _encode_string("Enum8('a' = 1, 'b' = 2)"),
+            _encode_string("String"),
+        ]
+    )
+    rows = [
+        (
+            b"".join(
+                [
+                    (10 + row).to_bytes(8, "little"),
+                    (-5 - row).to_bytes(4, "little", signed=True),
+                    (row % 2).to_bytes(1, "little"),
+                    (1734160800 + row).to_bytes(4, "little"),
+                    (base_day + row).to_bytes(2, "little"),
+                    (1 + row).to_bytes(1, "little", signed=True),
+                ]
+            ),
+            _encode_string(f"row{row}"),
+        )
+        for row in range(2)
+    ]
+
+    return header, rows
+
+
+def _fixed_width_payload() -> bytes:
+    """Build a two-row payload whose columns are all fixed-width, plus a trailing String."""
+    header, rows = _fixed_width_parts()
+    return header + b"".join(chunk for row in rows for chunk in row)
+
+
+def _expected_fixed_width_rows() -> list[list[object]]:
+    utc = ZoneInfo("UTC")
+    return [
+        [
+            10 + row,
+            -5 - row,
+            bool(row % 2),
+            datetime.fromtimestamp(1734160800 + row, tz=utc),
+            date(2025, 12, 14) + timedelta(days=row),
+            "a" if row == 0 else "b",
+            f"row{row}",
+        ]
+        for row in range(2)
+    ]
+
+
+def test_parse_rowbinary_fused_fixed_width_run():
+    names, types, rows = parse_rowbinary_with_names_and_types(_fixed_width_payload())
+
+    assert names == ["id", "delta", "flag", "ts", "day", "grade", "name"]
+    assert types[0] == "UInt64"
+    assert list(rows) == _expected_fixed_width_rows()
+
+
+def test_parse_rowbinary_fused_run_survives_chunk_splits():
+    """A run decoded by a single struct call must still resume across chunk boundaries."""
+    payload = _fixed_width_payload()
+
+    async def _chunks():
+        for i in range(0, len(payload), 3):
+            yield payload[i : i + 3]
+
+    async def _run():
+        parser = RowBinaryWithNamesAndTypesStreamParser(_chunks())
+        await parser.read_header()
+        return [row async for row in parser.rows()]
+
+    assert asyncio.run(_run()) == _expected_fixed_width_rows()
+
+
+def test_parse_rowbinary_fused_and_unfused_agree(monkeypatch: pytest.MonkeyPatch):
+    payload = _fixed_width_payload()
+    _names, _types, rows = parse_rowbinary_with_names_and_types(payload)
+    fused = list(rows)
+
+    monkeypatch.setattr(rowbinary, "_MIN_FUSED_FIELDS", 10_000)
+    monkeypatch.setattr(rowbinary, "_MIN_SEGMENTED_FUSED_FIELDS", 10_000)
+    _names, _types, rows = parse_rowbinary_with_names_and_types(payload)
+
+    assert fused == list(rows)
+
+
+def test_streaming_chunk_ends_exactly_after_fused_run():
+    """The retry must re-read the whole row, not resume after the already decoded run."""
+    header, rows = _fixed_width_parts()
+    first_fixed, first_name = rows[0]
+    chunks = [header + first_fixed, first_name + rows[1][0] + rows[1][1]]
+
+    async def _chunks():
+        for chunk in chunks:
+            yield chunk
+
+    async def _run():
+        parser = RowBinaryWithNamesAndTypesStreamParser(_chunks())
+        await parser.read_header()
+        return [row async for row in parser.rows()]
+
+    assert asyncio.run(_run()) == _expected_fixed_width_rows()
+
+
+def test_adaptive_cache_stops_and_resumes_caching():
+    computed = 0
+
+    def _compute(key: int) -> str:
+        nonlocal computed
+        computed += 1
+        return f"v{key}"
+
+    cached = rowbinary._adaptive_cache(_compute)
+
+    # Unique keys never hit, so the probe window switches the cache off.
+    for key in range(rowbinary._CACHE_PROBE_CALLS):
+        assert cached(key) == f"v{key}"
+
+    before = computed
+    assert cached(0) == "v0"
+    assert computed == before + 1
+
+    # After the cooldown it measures again, so repeated keys are served from the cache.
+    for _ in range(rowbinary._CACHE_REPROBE_CALLS):
+        cached(0)
+
+    assert cached(1) == "v1"
+    before = computed
+    assert cached(1) == "v1"
+    assert computed == before

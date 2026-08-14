@@ -298,8 +298,8 @@ class AsyncChClient:
         """
         params, data = self._prepare_query(query, **kwargs)
         payload, tz = await self._http_client.read(self._url, params=params, data=data)
-        _, _, rows = parse_rowbinary_with_names_and_types(payload, parse_timezone(tz))
-        return [tuple(values) for values in rows]
+        _, _, rows = parse_rowbinary_with_names_and_types(payload, parse_timezone(tz), as_tuple=True)
+        return list(rows)
 
     async def fetchone(self, query: str, **kwargs: Unpack[QueryOptions]) -> Row | None:
         """Execute query and fetch first result row.

@@ -6,7 +6,7 @@ from collections.abc import AsyncIterator, Sequence
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from functools import lru_cache
-from typing import Any, Callable, Iterable, Protocol
+from typing import Any, Callable, Iterable, Literal, Protocol, overload
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -28,6 +28,7 @@ class _Reader(Protocol):
     def read_float64(self) -> float: ...
     def read_varuint(self) -> int: ...
     def read_string(self) -> str: ...
+    def read_struct(self, unpack_from: Callable[..., tuple[Any, ...]], size: int) -> tuple[Any, ...]: ...
     def skip(self, size: int): ...
 
     @property
@@ -123,6 +124,16 @@ class _BinaryReader:
         length = self.read_varuint()
         return self._read(length).tobytes().decode("utf-8")
 
+    def read_struct(self, unpack_from: Callable[..., tuple[Any, ...]], size: int) -> tuple[Any, ...]:
+        """Decode a run of fixed-width fields with a single struct call."""
+        end = self._pos + size
+        if end > len(self._data):
+            raise ValueError("Unexpected end of data")
+
+        values = unpack_from(self._data, self._pos)
+        self._pos = end
+        return values
+
     @property
     def eof(self) -> bool:
         return self._pos >= len(self._data)
@@ -176,18 +187,65 @@ def _decimal_size(precision: int) -> int:
 
 _EPOCH_DATE = date(1970, 1, 1)
 
+_CACHE_MAX_SIZE = 4096
+_CACHE_PROBE_CALLS = 4096
+# Under a 25% hit rate the lookup costs more than recomputing the value.
+_CACHE_MIN_HITS = _CACHE_PROBE_CALLS // 4
+# Readers are shared across queries, so retry caching after 65,536 uncached values.
+_CACHE_REPROBE_CALLS = 65_536
 
-def _datetime_reader(ch_type: str, server_tz: ZoneInfo | None) -> Callable[[_Reader], datetime]:
+
+def _adaptive_cache(compute: Callable[[int], Any]) -> Callable[[int], Any]:
+    """Cache repeated integer keys and disable caching when the hit rate is below 25%."""
+    cache: dict[int, Any] = {}
+    calls = 0
+    hits = 0
+    countdown = 0
+
+    def cached(key: int) -> Any:
+        nonlocal calls, hits, countdown
+
+        if countdown:
+            countdown -= 1
+            return compute(key)
+
+        value = cache.get(key)
+        if value is None:
+            if len(cache) >= _CACHE_MAX_SIZE:
+                cache.clear()
+            value = cache[key] = compute(key)
+        else:
+            hits += 1
+
+        calls += 1
+        if calls >= _CACHE_PROBE_CALLS:
+            if hits < _CACHE_MIN_HITS:
+                cache.clear()
+                countdown = _CACHE_REPROBE_CALLS
+            calls = hits = 0
+
+        return value
+
+    return cached
+
+
+def _datetime_converter(ch_type: str, server_tz: ZoneInfo | None) -> Callable[[int], datetime]:
+    """Unix timestamp -> datetime."""
     explicit_tz = extract_timezone(ch_type)
-    # With an explicit timezone the value is timezone-aware; otherwise the wall-clock time is
-    # computed in the server timezone but returned as a naive datetime (no tzinfo).
+    # An explicit timezone yields an aware datetime; otherwise the wall-clock time is computed
+    # in the server timezone and returned naive.
     tz = explicit_tz or server_tz
     strip_tz = explicit_tz is None
 
-    @lru_cache(maxsize=4096)
-    def _dt(ts: int) -> datetime:
+    def _compute(ts: int) -> datetime:
         dt = datetime.fromtimestamp(ts, tz=tz)
         return dt.replace(tzinfo=None) if strip_tz else dt
+
+    return _adaptive_cache(_compute)
+
+
+def _datetime_reader(ch_type: str, server_tz: ZoneInfo | None) -> Callable[[_Reader], datetime]:
+    _dt = _datetime_converter(ch_type, server_tz)
 
     def _read_dt(reader: _Reader) -> datetime:
         return _dt(reader.read_uint32())
@@ -195,22 +253,27 @@ def _datetime_reader(ch_type: str, server_tz: ZoneInfo | None) -> Callable[[_Rea
     return _read_dt
 
 
-def _time64_reader(ch_type: str) -> Callable[[_Reader], timedelta]:
+def _time64_converter(ch_type: str) -> Callable[[int], timedelta]:
+    """Raw ticks -> timedelta."""
     inner = ch_type[ch_type.index("(") + 1 : ch_type.rindex(")")]
     scale = int(inner.strip())
 
     if scale <= 6:
         multiplier = 10 ** (6 - scale)
 
-        @lru_cache(maxsize=4096)
-        def _td(ticks: int) -> timedelta:
+        def _compute(ticks: int) -> timedelta:
             return timedelta(microseconds=ticks * multiplier)
     else:
         divisor = 10 ** (scale - 6)
 
-        @lru_cache(maxsize=4096)
-        def _td(ticks: int) -> timedelta:
+        def _compute(ticks: int) -> timedelta:
             return timedelta(microseconds=ticks // divisor)
+
+    return _adaptive_cache(_compute)
+
+
+def _time64_reader(ch_type: str) -> Callable[[_Reader], timedelta]:
+    _td = _time64_converter(ch_type)
 
     def _read_time64(reader: _Reader) -> timedelta:
         return _td(reader.read_int64())
@@ -218,18 +281,18 @@ def _time64_reader(ch_type: str) -> Callable[[_Reader], timedelta]:
     return _read_time64
 
 
-def _datetime64_reader(ch_type: str, server_tz: ZoneInfo | None) -> Callable[[_Reader], datetime]:
+def _datetime64_converter(ch_type: str, server_tz: ZoneInfo | None) -> Callable[[int], datetime]:
+    """Raw ticks -> datetime."""
     inner = ch_type[ch_type.index("(") + 1 : ch_type.rindex(")")]
     parts = [p.strip() for p in inner.split(",")]
     scale = int(parts[0])
     explicit_tz = extract_timezone(ch_type)
-    # With an explicit timezone the value is timezone-aware; otherwise the wall-clock time is
-    # computed in the server timezone but returned as a naive datetime (no tzinfo).
+    # An explicit timezone yields an aware datetime; otherwise the wall-clock time is computed
+    # in the server timezone and returned naive.
     tz = explicit_tz or server_tz
     strip_tz = explicit_tz is None
 
-    @lru_cache(maxsize=4096)
-    def _dt64(ticks: int) -> datetime:
+    def _compute(ticks: int) -> datetime:
         base_seconds, remainder = divmod(ticks, 10**scale)
         dt = datetime.fromtimestamp(base_seconds, tz=tz)
         if remainder:
@@ -237,19 +300,32 @@ def _datetime64_reader(ch_type: str, server_tz: ZoneInfo | None) -> Callable[[_R
             dt = dt + timedelta(microseconds=micros)
         return dt.replace(tzinfo=None) if strip_tz else dt
 
+    return _adaptive_cache(_compute)
+
+
+def _datetime64_reader(ch_type: str, server_tz: ZoneInfo | None) -> Callable[[_Reader], datetime]:
+    _dt64 = _datetime64_converter(ch_type, server_tz)
+
     def _read_dt64(reader: _Reader) -> datetime:
         return _dt64(reader.read_int64())
 
     return _read_dt64
 
 
-def _decimal_reader(ch_type: str) -> Callable[[_Reader], Decimal]:
-    precision, scale = _decimal_meta(ch_type)
-    size = _decimal_size(precision)
+def _decimal_converter(ch_type: str) -> Callable[[int], Decimal]:
+    """Raw signed integer -> scaled Decimal."""
+    _, scale = _decimal_meta(ch_type)
 
-    @lru_cache(maxsize=4096)
-    def _dec(raw: int) -> Decimal:
+    def _compute(raw: int) -> Decimal:
         return Decimal(raw).scaleb(-scale)
+
+    return _adaptive_cache(_compute)
+
+
+def _decimal_reader(ch_type: str) -> Callable[[_Reader], Decimal]:
+    precision, _ = _decimal_meta(ch_type)
+    size = _decimal_size(precision)
+    _dec = _decimal_converter(ch_type)
 
     def _read_dec(reader: _Reader) -> Decimal:
         return _dec(int.from_bytes(reader._read(size), "little", signed=True))
@@ -270,12 +346,7 @@ def _fixedstring_reader(ch_type: str) -> Callable[[_Reader], str]:
 
 @lru_cache(maxsize=512)
 def _enum_mapping(ch_type: str) -> dict[int, str]:
-    """
-    Parse ClickHouse Enum8/Enum16 type definition into {value: name}.
-
-    Example:
-      Enum8('a' = 1, 'b' = 2)
-    """
+    """Parse an Enum8/Enum16 definition into {value: name}: Enum8('a' = 1) -> {1: "a"}."""
     inner = ch_type[ch_type.index("(") + 1 : ch_type.rindex(")")]
     pairs = re.findall(r"'((?:\\.|[^'])*)'\s*=\s*([+-]?\d+)", inner)
     if not pairs:
@@ -289,23 +360,31 @@ def _enum_mapping(ch_type: str) -> dict[int, str]:
     return mapping
 
 
+def _enum_converter(ch_type: str) -> Callable[[int], str]:
+    """Raw value -> enum name, or its decimal string when the value is not in the definition."""
+    mapping = _enum_mapping(ch_type)
+
+    def _convert(value: int) -> str:
+        return mapping.get(value, str(value))
+
+    return _convert
+
+
 def _enum_reader(ch_type: str) -> Callable[[_Reader], str]:
     base = extract_base_type(ch_type)
-    mapping = _enum_mapping(ch_type)
+    convert = _enum_converter(ch_type)
 
     if base == "Enum8":
 
         def _read_enum(reader: _Reader) -> str:
-            value = reader.read_int8()
-            return mapping.get(value, str(value))
+            return convert(reader.read_int8())
 
         return _read_enum
 
     if base == "Enum16":
 
         def _read_enum(reader: _Reader) -> str:
-            value = reader.read_int16()
-            return mapping.get(value, str(value))
+            return convert(reader.read_int16())
 
         return _read_enum
 
@@ -359,8 +438,26 @@ def _tuple_reader(ch_type: str, server_tz: ZoneInfo | None) -> Callable[[_Reader
     element_types = split_type_arguments(inner)
     readers = tuple(_reader_for_type(t, server_tz) for t in element_types)
 
+    # Unrolling the common sizes avoids a throwaway generator per row. A tuple display evaluates
+    # left to right, as a sequential reader requires.
+    if len(readers) == 2:
+        first, second = readers
+
+        def _read_tuple2(reader: _Reader) -> tuple[Any, ...]:
+            return (first(reader), second(reader))
+
+        return _read_tuple2
+
+    if len(readers) == 3:
+        first, second, third = readers
+
+        def _read_tuple3(reader: _Reader) -> tuple[Any, ...]:
+            return (first(reader), second(reader), third(reader))
+
+        return _read_tuple3
+
     def _read_tuple(reader: _Reader) -> tuple[Any, ...]:
-        return tuple(r(reader) for r in readers)
+        return tuple([r(reader) for r in readers])
 
     return _read_tuple
 
@@ -443,10 +540,210 @@ def _reader_for_type(ch_type: str, server_tz: ZoneInfo | None = None) -> Callabl
     raise ValueError(f"Unsupported RowBinary type: {ch_type}")
 
 
+_STRUCT_CODES: dict[str, str] = {
+    "Bool": "?",
+    "Float32": "f",
+    "Float64": "d",
+    "Int8": "b",
+    "Int16": "h",
+    "Int32": "i",
+    "Int64": "q",
+    "UInt8": "B",
+    "UInt16": "H",
+    "UInt32": "I",
+    "UInt64": "Q",
+}
+
+_DECIMAL_STRUCT_CODES: dict[int, str] = {4: "i", 8: "q"}
+
+# Shorter runs keep the plain per-field reader. A fully fixed-width row needs no segments, so
+# two fields already pay off; a mixed row costs one extra call per variable-width column and
+# needs three.
+_MIN_FUSED_FIELDS = 2
+_MIN_SEGMENTED_FUSED_FIELDS = 3
+
+
+def _days_to_date(days: int) -> date:
+    return _EPOCH_DATE + timedelta(days=days)
+
+
+def _seconds_to_timedelta(seconds: int) -> timedelta:
+    return timedelta(seconds=seconds)
+
+
+# Fixed-width types whose raw scalar still needs converting. Each entry returns the struct
+# format code plus the converter.
+_FIXED_CONVERTERS: dict[str, Callable[[str, ZoneInfo | None], tuple[str, Callable[[Any], Any]]]] = {
+    "Date": lambda _ch_type, _tz: ("H", _days_to_date),
+    "Date32": lambda _ch_type, _tz: ("i", _days_to_date),
+    "DateTime": lambda ch_type, tz: ("I", _datetime_converter(ch_type, tz)),
+    "DateTime64": lambda ch_type, tz: ("q", _datetime64_converter(ch_type, tz)),
+    "Enum8": lambda ch_type, _tz: ("b", _enum_converter(ch_type)),
+    "Enum16": lambda ch_type, _tz: ("h", _enum_converter(ch_type)),
+    "IPv4": lambda _ch_type, _tz: ("I", ipaddress.IPv4Address),
+    "Time": lambda _ch_type, _tz: ("i", _seconds_to_timedelta),
+    "Time64": lambda ch_type, _tz: ("q", _time64_converter(ch_type)),
+}
+
+
+def _fixed_field(ch_type: str, server_tz: ZoneInfo | None) -> tuple[str, Callable[[Any], Any] | None] | None:
+    """Struct format code and optional converter, or None if the column is not fixed-width."""
+    # A Nullable value is prefixed with a null flag, so its width varies from row to row.
+    if "Nullable(" in ch_type:
+        return None
+
+    unwrapped = unwrap_wrappers(ch_type)
+    base = extract_base_type(unwrapped)
+
+    code = _STRUCT_CODES.get(base)
+    if code is not None:
+        return code, None
+
+    build = _FIXED_CONVERTERS.get(base)
+    if build is not None:
+        return build(unwrapped, server_tz)
+
+    if base.startswith("Decimal"):
+        precision, _ = _decimal_meta(unwrapped)
+        decimal_code = _DECIMAL_STRUCT_CODES.get(_decimal_size(precision))
+        return (decimal_code, _decimal_converter(unwrapped)) if decimal_code is not None else None
+
+    return None
+
+
+_ConvSlots = list[tuple[int, Callable[[Any], Any]]]
+
+
+def _struct_row_reader(codes: list[str], conv_slots: _ConvSlots) -> Callable[[_Reader], list[Any]]:
+    """Reader for a row that is fixed-width end to end: one struct call per row."""
+    unpacker = struct.Struct(f"<{''.join(codes)}")
+    unpack_from = unpacker.unpack_from
+    size = unpacker.size
+
+    def _read_row(reader: _Reader) -> list[Any]:
+        values = list(reader.read_struct(unpack_from, size))
+        for idx, convert in conv_slots:
+            values[idx] = convert(values[idx])
+        return values
+
+    return _read_row
+
+
+def _struct_segment(codes: list[str], conv_slots: _ConvSlots) -> Callable[[_Reader, list[Any]], None]:
+    """Segment appending one fused run of fixed-width fields."""
+    unpacker = struct.Struct(f"<{''.join(codes)}")
+    unpack_from = unpacker.unpack_from
+    size = unpacker.size
+
+    if not conv_slots:
+
+        def _read_run(reader: _Reader, values: list[Any]) -> None:
+            values += reader.read_struct(unpack_from, size)
+
+        return _read_run
+
+    def _read_converted_run(reader: _Reader, values: list[Any]) -> None:
+        chunk = list(reader.read_struct(unpack_from, size))
+        for idx, convert in conv_slots:
+            chunk[idx] = convert(chunk[idx])
+        values += chunk
+
+    return _read_converted_run
+
+
+def _field_segment(read: Callable[[_Reader], Any]) -> Callable[[_Reader, list[Any]], None]:
+    """Segment appending one column read the ordinary way."""
+
+    def _read_field(reader: _Reader, values: list[Any]) -> None:
+        values.append(read(reader))
+
+    return _read_field
+
+
+def _fixed_runs(fields: list[tuple[str, Callable[[Any], Any] | None] | None]) -> list[list[int]]:
+    """Column indexes grouped into runs of consecutive fixed-width columns."""
+    runs: list[list[int]] = []
+    run: list[int] = []
+    for idx, field in enumerate(fields):
+        if field is None:
+            if run:
+                runs.append(run)
+                run = []
+            continue
+        run.append(idx)
+
+    if run:
+        runs.append(run)
+
+    return runs
+
+
+def _make_row_reader(types: list[str], server_tz: ZoneInfo | None) -> Callable[[_Reader], list[Any]] | None:
+    """Row decoder fusing each run of fixed-width columns into one struct call.
+
+    Returns None when no run is long enough to be worth fusing; the caller then keeps the plain
+    per-field path.
+    """
+    fields = [_fixed_field(tp, server_tz) for tp in types]
+    runs = _fixed_runs(fields)
+
+    def _run_layout(columns: list[int]) -> tuple[list[str], _ConvSlots]:
+        codes: list[str] = []
+        conv_slots: _ConvSlots = []
+        for offset, column in enumerate(columns):
+            field = fields[column]
+            assert field is not None
+            code, convert = field
+            codes.append(code)
+            if convert is not None:
+                conv_slots.append((offset, convert))
+        return codes, conv_slots
+
+    if len(runs) == 1 and len(runs[0]) == len(types) >= _MIN_FUSED_FIELDS:
+        return _struct_row_reader(*_run_layout(runs[0]))
+
+    run_by_start = {run[0]: run for run in runs if len(run) >= _MIN_SEGMENTED_FUSED_FIELDS}
+    if not run_by_start:
+        return None
+
+    segments: list[Callable[[_Reader, list[Any]], None]] = []
+    idx = 0
+    while idx < len(types):
+        columns = run_by_start.get(idx)
+        if columns is not None:
+            segments.append(_struct_segment(*_run_layout(columns)))
+            idx += len(columns)
+            continue
+        segments.append(_field_segment(_reader_for_type(types[idx], server_tz)))
+        idx += 1
+
+    def _read_row(reader: _Reader) -> list[Any]:
+        values: list[Any] = []
+        for segment in segments:
+            segment(reader, values)
+        return values
+
+    return _read_row
+
+
+@overload
+def parse_rowbinary_with_names_and_types(
+    data: bytes, server_tz: ZoneInfo | None = ..., *, as_tuple: Literal[False] = ...
+) -> tuple[list[str], list[str], Iterable[list[Any]]]: ...
+
+
+@overload
+def parse_rowbinary_with_names_and_types(
+    data: bytes, server_tz: ZoneInfo | None = ..., *, as_tuple: Literal[True]
+) -> tuple[list[str], list[str], Iterable[tuple[Any, ...]]]: ...
+
+
 def parse_rowbinary_with_names_and_types(
     data: bytes,
     server_tz: ZoneInfo | None = None,
-) -> tuple[list[str], list[str], Iterable[list[Any]]]:
+    *,
+    as_tuple: bool = False,
+) -> tuple[list[str], list[str], Iterable[Any]]:
     """
     Parse RowBinaryWithNamesAndTypes payload and return header and row iterator.
 
@@ -454,23 +751,42 @@ def parse_rowbinary_with_names_and_types(
         data (bytes): RowBinaryWithNamesAndTypes payload.
         server_tz (ZoneInfo | None): Fallback timezone for ``DateTime``/``DateTime64`` columns
             that carry no explicit timezone (the ClickHouse server timezone).
+        as_tuple (bool): Yield tuples instead of lists, avoiding a second pass over every row.
 
     Returns:
         names: list of column names
         types: list of ClickHouse types
-        rows: iterable of rows (list of values)
+        rows: iterable of rows (list or tuple of values)
     """
     reader = _BinaryReader(data)
     column_count = reader.read_varuint()
     names = [reader.read_string() for _ in range(column_count)]
     types = [reader.read_string() for _ in range(column_count)]
-    readers = [_reader_for_type(tp, server_tz) for tp in types]
+    read_row = _make_row_reader(types, server_tz)
 
-    def _rows() -> Iterable[list[Any]]:
-        while not reader.eof:
-            yield [read(reader) for read in readers]
+    # Spelled out per path instead of sharing one generator: in this loop an extra call per row
+    # costs more than the duplication saves.
+    if read_row is None:
+        readers = [_reader_for_type(tp, server_tz) for tp in types]
 
-    return names, types, _rows()
+        def _rows() -> Iterable[list[Any]]:
+            while not reader.eof:
+                yield [read(reader) for read in readers]
+
+        def _tuple_rows() -> Iterable[tuple[Any, ...]]:
+            while not reader.eof:
+                yield tuple([read(reader) for read in readers])
+    else:
+
+        def _rows() -> Iterable[list[Any]]:
+            while not reader.eof:
+                yield read_row(reader)
+
+        def _tuple_rows() -> Iterable[tuple[Any, ...]]:
+            while not reader.eof:
+                yield tuple(read_row(reader))
+
+    return names, types, _tuple_rows() if as_tuple else _rows()
 
 
 _FIXED_SIZES: dict[str, int] = {
@@ -504,8 +820,8 @@ def _array_skipper(inner_type: str) -> Callable[[_Reader], None]:
 
     inner_skip = _skipper_for_type(inner_type)
 
-    # Nullable(T) in RowBinary is not fixed-size per element (null flag + optional value),
-    # so we must scan elements rather than multiplying by a fixed byte width.
+    # Nullable(T) elements vary in size (null flag + optional value), so they must be scanned
+    # one by one instead of multiplying by a fixed width.
     if inner_type.startswith("Nullable(") and inner_type.endswith(")"):
 
         def _skip_array_nullable(reader: _Reader):
@@ -866,6 +1182,15 @@ class _StreamingReader:
         self._pos += length
         return s
 
+    def read_struct(self, unpack_from: Callable[..., tuple[Any, ...]], size: int) -> tuple[Any, ...]:
+        """Decode a run of fixed-width fields with a single struct call."""
+        end = self._pos + size
+        if end > len(self._buf):
+            raise _NeedMoreData
+        values = unpack_from(self._buf, self._pos)
+        self._pos = end
+        return values
+
 
 class RowBinaryWithNamesAndTypesStreamParser:
     def __init__(self, chunks: AsyncIterator[bytes], *, lazy: bool = False, server_tz: ZoneInfo | None = None):
@@ -875,6 +1200,7 @@ class RowBinaryWithNamesAndTypesStreamParser:
         self._names: list[str] | None = None
         self._types: list[str] | None = None
         self._readers: list[Callable[[_Reader], Any]] | None = None
+        self._read_row: Callable[[_Reader], list[Any]] | None = None
         self._skippers: list[Callable[[_Reader], None]] | None = None
         self._lazy = lazy
         self._server_tz = server_tz
@@ -903,8 +1229,10 @@ class RowBinaryWithNamesAndTypesStreamParser:
                 self._readers = [_reader_for_type(tp, self._server_tz) for tp in types]
                 if self._lazy:
                     self._skippers = [_skipper_for_type(tp) for tp in types]
+                    self._read_row = None
                 else:
                     self._skippers = None
+                    self._read_row = _make_row_reader(types, self._server_tz)
             except _NeedMoreData:
                 self._reader.pos = checkpoint
                 if not await self._fill():
@@ -915,6 +1243,7 @@ class RowBinaryWithNamesAndTypesStreamParser:
     async def rows(self) -> AsyncIterator[list[Any] | RowBinaryLazyValues]:
         await self.read_header()
         assert self._readers is not None
+        read_row = self._read_row
 
         while True:
             if self._done and self._reader.remaining == 0:
@@ -934,9 +1263,10 @@ class RowBinaryWithNamesAndTypesStreamParser:
                     row_end = self._reader.pos
                     row_bytes = self._reader.copy_slice(row_start, row_end)
                     yield RowBinaryLazyValues(memoryview(row_bytes), offsets, self._readers)
+                elif read_row is not None:
+                    yield read_row(self._reader)
                 else:
-                    values = [read(self._reader) for read in self._readers]
-                    yield values
+                    yield [read(self._reader) for read in self._readers]
                 self._reader.compact()
             except _NeedMoreData:
                 self._reader.pos = checkpoint
