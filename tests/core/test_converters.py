@@ -1,7 +1,8 @@
 import json
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta, tzinfo
 from decimal import Decimal
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from aiochlite.converters import to_clickhouse, to_json
 
@@ -39,6 +40,45 @@ class TestToClickHouse:
 
         d = date(2025, 12, 14)
         assert to_clickhouse(d) == "2025-12-14"
+
+    def test_naive_datetime_keeps_microseconds(self):
+        """Naive values stay wall-clock text, with the fraction only when it is non-zero."""
+        assert to_clickhouse(datetime(2025, 12, 14, 15, 30, 45, 123456)) == "2025-12-14 15:30:45.123456"
+        assert to_clickhouse(datetime(2025, 12, 14, 15, 30, 45, 1)) == "2025-12-14 15:30:45.000001"
+        assert to_clickhouse(datetime(2025, 12, 14, 15, 30, 45)) == "2025-12-14 15:30:45"
+
+    def test_aware_datetime_becomes_timestamp(self):
+        """Aware values become a Unix timestamp, so the instant survives any column timezone."""
+        moscow = datetime(2024, 1, 1, 15, 0, 0, tzinfo=ZoneInfo("Europe/Moscow"))
+        utc = datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
+        assert to_clickhouse(moscow) == to_clickhouse(utc) == "1704110400"
+        assert to_clickhouse(utc.replace(microsecond=123456)) == "1704110400.123456"
+
+    def test_aware_datetime_before_epoch(self):
+        """Timestamps stay negative and keep the fraction on the same side of the sign."""
+        assert to_clickhouse(datetime(1950, 1, 1, tzinfo=UTC)) == "-631152000"
+        assert to_clickhouse(datetime(1949, 12, 31, 23, 59, 59, 876544, tzinfo=UTC)) == "-631152000.123456"
+
+    def test_tzinfo_without_offset_is_naive(self):
+        """Python calls a value naive when utcoffset() is None, whatever tzinfo is set."""
+
+        class _NoOffset(tzinfo):
+            def utcoffset(self, dt: datetime | None) -> timedelta | None:
+                return None
+
+            def dst(self, dt: datetime | None) -> timedelta | None:
+                return None
+
+            def tzname(self, dt: datetime | None) -> str | None:
+                return None
+
+        value = datetime(2025, 12, 14, 15, 30, 45, tzinfo=_NoOffset())
+        assert to_clickhouse(value) == "2025-12-14 15:30:45"
+
+    def test_datetime_in_container_literal(self):
+        """Container literals quote the same rendering."""
+        assert to_clickhouse([datetime(2025, 12, 14, 15, 30, 45, 123456)]) == "['2025-12-14 15:30:45.123456']"
+        assert to_clickhouse([datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)]) == "['1704110400']"
 
     def test_timedelta(self):
         """Test timedelta → Time/Time64 literal conversions."""

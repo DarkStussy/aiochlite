@@ -153,3 +153,17 @@ async def test_insert_datetime64(ch_client: AsyncChClient, make_table: TableFact
     assert row["id"] == 1
     assert row["ts_utc"] == datetime(2025, 12, 14, 10, 0, 0, 123456, tzinfo=ZoneInfo("UTC"))
     assert row["ts_msk"] == datetime(2025, 12, 14, 13, 30, 45, 123456, tzinfo=ZoneInfo("Europe/Moscow"))
+
+
+async def test_insert_datetime64_preserves_precision_and_instant(ch_client: AsyncChClient, make_table: TableFactory):
+    """Inserts go through the same rendering, so microseconds and the instant must survive."""
+    naive = datetime(2024, 1, 1, 12, 0, 0, 123456)
+    aware = datetime(2024, 1, 1, 15, 0, 0, 123456, tzinfo=ZoneInfo("Europe/Moscow"))
+
+    table = await make_table(id="UInt32", n="DateTime64(6, 'UTC')", a="DateTime64(6, 'UTC')")
+    await ch_client.insert(table, [(1, naive, aware)], column_names=("id", "n", "a"))
+    row = await ch_client.fetchone(f"SELECT n, a FROM {table}")
+
+    assert row is not None
+    assert row["n"].replace(tzinfo=None) == naive
+    assert row["a"] == aware

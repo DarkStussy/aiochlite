@@ -270,6 +270,9 @@ result = await client.fetch(
 - Date/Time: `datetime`, `date`, `timedelta`
 - Special: `UUID`, `Decimal`, `bytes`
 
+Microseconds are kept, so a `DateTime` column rejects a value that has them — use `DateTime64`
+or `.replace(microsecond=0)`.
+
 See [Type Conversion](#type-conversion) for full type mapping details.
 
 ### Query Settings

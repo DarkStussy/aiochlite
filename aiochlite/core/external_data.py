@@ -13,6 +13,10 @@ def _transform_to_json_compact_each_row(columns: list[str], rows: Sequence[Any])
 def _to_json_compact_each_row_bytes(external_table: ExternalTable) -> bytes:
     """Convert external table to JSONCompactEachRow format bytes."""
     rows = external_table.data
+    if not rows:
+        # The structure alone is enough for the server to build an empty table.
+        return b""
+
     if isinstance(rows[0], dict):
         rows = _transform_to_json_compact_each_row([s[0] for s in external_table.structure], rows)
 

@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from aiochlite import AsyncChClient
+from aiochlite import AsyncChClient, ChClientError
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.clickhouse]
 
@@ -128,3 +128,52 @@ async def test_params_container_types(ch_client: AsyncChClient):
     assert row["mp_n"] == {"a": None, "b": 2, "c": None}
     assert row["mp_arr_n"] == {"a": [None, 1, None], "b": []}
     assert row["mp_nested"] == mp_nested
+
+
+@pytest.mark.parametrize("precision", [3, 6, 9])
+async def test_datetime64_params_keep_precision(ch_client: AsyncChClient, precision: int):
+    """Microseconds must survive the round trip; DateTime64(3) keeps its own precision."""
+    naive = datetime(2024, 1, 1, 12, 0, 0, 123456)
+    aware = datetime(2024, 1, 1, 12, 0, 0, 123456, tzinfo=ZoneInfo("UTC"))
+    expected = naive if precision > 3 else naive.replace(microsecond=123000)
+
+    row = await ch_client.fetchone(
+        f"SELECT {{n:DateTime64({precision}, 'UTC')}} AS n, {{a:DateTime64({precision}, 'UTC')}} AS a",
+        params={"n": naive, "a": aware},
+    )
+    assert row is not None
+    assert row["n"].replace(tzinfo=None) == expected
+    assert row["a"].replace(tzinfo=None) == expected
+
+
+async def test_aware_datetime_param_fixes_the_instant(ch_client: AsyncChClient):
+    """The same instant in different zones must land on the same value, whatever the column zone."""
+    moscow = datetime(2024, 1, 1, 15, 0, 0, tzinfo=ZoneInfo("Europe/Moscow"))
+    utc = datetime(2024, 1, 1, 12, 0, 0, tzinfo=ZoneInfo("UTC"))
+
+    row = await ch_client.fetchone(
+        "SELECT {m:DateTime('Europe/Moscow')} AS m, {u:DateTime('UTC')} AS u",
+        params={"m": moscow, "u": utc},
+    )
+    assert row is not None
+    assert row["m"] == row["u"] == utc
+
+
+async def test_naive_datetime_param_is_wall_clock(ch_client: AsyncChClient):
+    """Naive values are read in the column timezone rather than converted."""
+    naive = datetime(2024, 1, 1, 12, 0, 0)
+    row = await ch_client.fetchone(
+        "SELECT {v:DateTime('Europe/Moscow')} AS v",
+        params={"v": naive},
+    )
+    assert row is not None
+    assert row["v"] == naive.replace(tzinfo=ZoneInfo("Europe/Moscow"))
+
+
+async def test_datetime_param_with_microseconds_is_rejected(ch_client: AsyncChClient):
+    """DateTime rejects microseconds but accepts whole seconds."""
+    with pytest.raises(ChClientError, match="BAD_QUERY_PARAMETER"):
+        await ch_client.fetchval("SELECT {v:DateTime}", params={"v": datetime(2024, 1, 1, 12, 0, 0, 123456)})
+
+    value = await ch_client.fetchval("SELECT {v:DateTime}", params={"v": datetime(2024, 1, 1, 12, 0, 0)})
+    assert value == datetime(2024, 1, 1, 12, 0, 0)

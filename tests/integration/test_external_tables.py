@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import ipaddress
+from collections.abc import Sequence
 from datetime import date, datetime
 from decimal import Decimal
+from typing import Any
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -119,3 +121,25 @@ async def test_external_tables_container_types(ch_client: AsyncChClient):
     assert row["mp"] == {"a": 1, "b": -2}
     assert row["mp_n"] == {"a": None, "b": 2, "c": None}
     assert row["mp_arr_n"] == {"a": [None, 1, None], "b": []}
+
+
+@pytest.mark.parametrize("data", [(), []], ids=["tuple", "list"])
+async def test_empty_external_table(ch_client: AsyncChClient, data: Sequence[tuple[Any, ...]]):
+    """The structure alone describes the table, so no rows must still be a valid request."""
+    ext = ExternalTable(structure=(("id", "UInt32"), ("name", "String")), data=data)
+    value = await ch_client.fetchval("SELECT count() FROM ext", external_tables={"ext": ext})
+    assert value == 0
+
+
+async def test_external_table_datetime_precision(ch_client: AsyncChClient):
+    """External table rows must not lose microseconds either."""
+    naive = datetime(2024, 1, 1, 12, 0, 0, 123456)
+    aware = datetime(2024, 1, 1, 12, 0, 0, 123456, tzinfo=ZoneInfo("UTC"))
+    ext = ExternalTable(
+        structure=(("n", "DateTime64(6, 'UTC')"), ("a", "DateTime64(6, 'UTC')")),
+        data=((naive, aware),),
+    )
+    row = await ch_client.fetchone("SELECT n, a FROM ext", external_tables={"ext": ext})
+    assert row is not None
+    assert row["n"].replace(tzinfo=None) == naive
+    assert row["a"].replace(tzinfo=None) == naive

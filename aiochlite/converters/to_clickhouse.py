@@ -1,7 +1,35 @@
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
+
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+_MICROSECOND = timedelta(microseconds=1)
+
+
+def format_datetime(value: datetime) -> str:
+    """
+    Render a datetime for a ClickHouse parameter.
+
+    Aware values become a Unix timestamp, which fixes the instant regardless of the column
+    timezone. Naive values keep wall-clock text and are read in the column timezone. Both keep
+    microseconds when present; ``DateTime`` columns reject them, since they cannot store them.
+
+    Args:
+        value (datetime): Value to render.
+
+    Returns:
+        str: Timestamp for aware values, ``YYYY-MM-DD hh:mm:ss[.ffffff]`` for naive ones.
+    """
+    # tzinfo alone is not the test: one whose utcoffset() is None still leaves the value naive.
+    if value.tzinfo is not None and value.utcoffset() is not None:
+        total_us = (value - _EPOCH) // _MICROSECOND
+        sign = "-" if total_us < 0 else ""
+        seconds, micros = divmod(abs(total_us), 1_000_000)
+        return f"{sign}{seconds}.{micros:06d}" if micros else f"{sign}{seconds}"
+
+    text = f"{value.year:04d}-{value.month:02d}-{value.day:02d} {value.hour:02d}:{value.minute:02d}:{value.second:02d}"
+    return f"{text}.{value.microsecond:06d}" if value.microsecond else text
 
 
 def format_timedelta(td: timedelta) -> str:
@@ -49,7 +77,7 @@ def _scalar_clickhouse_literal(value: Any) -> str | _MissingType:
         elif value_type is str:
             out = f"'{_escape_ch_string_literal(value)}'"
         elif isinstance(value, datetime):
-            out = f"'{value.strftime('%Y-%m-%d %H:%M:%S')}'"
+            out = f"'{format_datetime(value)}'"
         elif isinstance(value, date):
             out = f"'{value.strftime('%Y-%m-%d')}'"
         elif isinstance(value, timedelta):
@@ -110,7 +138,7 @@ def to_clickhouse(value: Any) -> str | int | float:
         elif isinstance(value, (list, tuple, dict)):
             out = _to_clickhouse_literal(value)
         elif isinstance(value, datetime):
-            out = value.strftime("%Y-%m-%d %H:%M:%S")
+            out = format_datetime(value)
         elif isinstance(value, date):
             out = value.strftime("%Y-%m-%d")
         elif isinstance(value, timedelta):
