@@ -36,8 +36,11 @@ class _Reader(Protocol):
 
 
 class _BinaryReader:
-    def __init__(self, data: bytes | memoryview):
-        self._data = data if isinstance(data, memoryview) else memoryview(data)
+    def __init__(self, data: bytes):
+        # Both views of the same payload: memoryview for struct reads, bytes for string slicing,
+        # which is markedly cheaper than slicing a memoryview and converting it back.
+        self._raw = data
+        self._data = memoryview(data)
         self._pos = 0
 
     def _read(self, size: int) -> memoryview:
@@ -122,7 +125,13 @@ class _BinaryReader:
 
     def read_string(self) -> str:
         length = self.read_varuint()
-        return self._read(length).tobytes().decode("utf-8")
+        end = self._pos + length
+        if end > len(self._raw):
+            raise ValueError("Unexpected end of data")
+
+        value = self._raw[self._pos : end].decode("utf-8")
+        self._pos = end
+        return value
 
     def read_struct(self, unpack_from: Callable[..., tuple[Any, ...]], size: int) -> tuple[Any, ...]:
         """Decode a run of fixed-width fields with a single struct call."""
@@ -191,46 +200,9 @@ def _decimal_size(precision: int) -> int:
 
 _EPOCH_DATE = date(1970, 1, 1)
 
-_CACHE_MAX_SIZE = 4096
-_CACHE_PROBE_CALLS = 4096
-# Under a 25% hit rate the lookup costs more than recomputing the value.
-_CACHE_MIN_HITS = _CACHE_PROBE_CALLS // 4
-# Readers are shared across queries, so retry caching after 65,536 uncached values.
-_CACHE_REPROBE_CALLS = 65_536
-
-
-def _adaptive_cache(compute: Callable[[int], Any]) -> Callable[[int], Any]:
-    """Cache repeated integer keys and disable caching when the hit rate is below 25%."""
-    cache: dict[int, Any] = {}
-    calls = 0
-    hits = 0
-    countdown = 0
-
-    def cached(key: int) -> Any:
-        nonlocal calls, hits, countdown
-
-        if countdown:
-            countdown -= 1
-            return compute(key)
-
-        value = cache.get(key)
-        if value is None:
-            if len(cache) >= _CACHE_MAX_SIZE:
-                cache.clear()
-            value = cache[key] = compute(key)
-        else:
-            hits += 1
-
-        calls += 1
-        if calls >= _CACHE_PROBE_CALLS:
-            if hits < _CACHE_MIN_HITS:
-                cache.clear()
-                countdown = _CACHE_REPROBE_CALLS
-            calls = hits = 0
-
-        return value
-
-    return cached
+# Caching decoded values wins ~30% when they repeat and costs ~14% when all are distinct, as with
+# monotonic event time. Switching it on per query was measured too: it costs as much as it saves.
+_VALUE_CACHE_SIZE = 4096
 
 
 def _datetime_converter(ch_type: str, server_tz: ZoneInfo | None) -> Callable[[int], datetime]:
@@ -241,11 +213,12 @@ def _datetime_converter(ch_type: str, server_tz: ZoneInfo | None) -> Callable[[i
     tz = explicit_tz or server_tz
     strip_tz = explicit_tz is None
 
-    def _compute(ts: int) -> datetime:
+    @lru_cache(maxsize=_VALUE_CACHE_SIZE)
+    def _convert(ts: int) -> datetime:
         dt = datetime.fromtimestamp(ts, tz=tz)
         return dt.replace(tzinfo=None) if strip_tz else dt
 
-    return _adaptive_cache(_compute)
+    return _convert
 
 
 def _datetime_reader(ch_type: str, server_tz: ZoneInfo | None) -> Callable[[_Reader], datetime]:
@@ -265,15 +238,17 @@ def _time64_converter(ch_type: str) -> Callable[[int], timedelta]:
     if scale <= 6:
         multiplier = 10 ** (6 - scale)
 
-        def _compute(ticks: int) -> timedelta:
+        @lru_cache(maxsize=_VALUE_CACHE_SIZE)
+        def _convert(ticks: int) -> timedelta:
             return timedelta(microseconds=ticks * multiplier)
     else:
         divisor = 10 ** (scale - 6)
 
-        def _compute(ticks: int) -> timedelta:
+        @lru_cache(maxsize=_VALUE_CACHE_SIZE)
+        def _convert(ticks: int) -> timedelta:
             return timedelta(microseconds=ticks // divisor)
 
-    return _adaptive_cache(_compute)
+    return _convert
 
 
 def _time64_reader(ch_type: str) -> Callable[[_Reader], timedelta]:
@@ -296,7 +271,8 @@ def _datetime64_converter(ch_type: str, server_tz: ZoneInfo | None) -> Callable[
     tz = explicit_tz or server_tz
     strip_tz = explicit_tz is None
 
-    def _compute(ticks: int) -> datetime:
+    @lru_cache(maxsize=_VALUE_CACHE_SIZE)
+    def _convert(ticks: int) -> datetime:
         base_seconds, remainder = divmod(ticks, 10**scale)
         dt = datetime.fromtimestamp(base_seconds, tz=tz)
         if remainder:
@@ -304,7 +280,7 @@ def _datetime64_converter(ch_type: str, server_tz: ZoneInfo | None) -> Callable[
             dt = dt + timedelta(microseconds=micros)
         return dt.replace(tzinfo=None) if strip_tz else dt
 
-    return _adaptive_cache(_compute)
+    return _convert
 
 
 def _datetime64_reader(ch_type: str, server_tz: ZoneInfo | None) -> Callable[[_Reader], datetime]:
@@ -320,10 +296,11 @@ def _decimal_converter(ch_type: str) -> Callable[[int], Decimal]:
     """Raw signed integer -> scaled Decimal."""
     _, scale = _decimal_meta(ch_type)
 
-    def _compute(raw: int) -> Decimal:
+    @lru_cache(maxsize=_VALUE_CACHE_SIZE)
+    def _convert(raw: int) -> Decimal:
         return Decimal(raw).scaleb(-scale)
 
-    return _adaptive_cache(_compute)
+    return _convert
 
 
 def _decimal_reader(ch_type: str) -> Callable[[_Reader], Decimal]:
@@ -1243,7 +1220,7 @@ class _StreamingReader:
         if self._pos + length > len(self._buf):
             self._pos = p
             raise _NeedMoreData
-        s = bytes(self._buf[self._pos : self._pos + length]).decode("utf-8")
+        s = self._buf[self._pos : self._pos + length].decode("utf-8")
         self._pos += length
         return s
 

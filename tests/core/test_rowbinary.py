@@ -461,34 +461,6 @@ def test_streaming_chunk_ends_exactly_after_fused_run():
     assert asyncio.run(_run()) == _expected_fixed_width_rows()
 
 
-def test_adaptive_cache_stops_and_resumes_caching():
-    computed = 0
-
-    def _compute(key: int) -> str:
-        nonlocal computed
-        computed += 1
-        return f"v{key}"
-
-    cached = rowbinary._adaptive_cache(_compute)
-
-    # Unique keys never hit, so the probe window switches the cache off.
-    for key in range(rowbinary._CACHE_PROBE_CALLS):
-        assert cached(key) == f"v{key}"
-
-    before = computed
-    assert cached(0) == "v0"
-    assert computed == before + 1
-
-    # After the cooldown it measures again, so repeated keys are served from the cache.
-    for _ in range(rowbinary._CACHE_REPROBE_CALLS):
-        cached(0)
-
-    assert cached(1) == "v1"
-    before = computed
-    assert cached(1) == "v1"
-    assert computed == before
-
-
 FIXED_WIDTH_TYPES = [
     "Bool",
     "UInt8",

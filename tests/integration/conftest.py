@@ -23,8 +23,9 @@ def clickhouse_config() -> ChConfig:
 
 
 @pytest.fixture
-async def ch_client(clickhouse_config: ChConfig) -> AsyncIterator[AsyncChClient]:
-    client = AsyncChClient(**clickhouse_config)
+async def ch_client(request: pytest.FixtureRequest, clickhouse_config: ChConfig) -> AsyncIterator[AsyncChClient]:
+    # Parametrize indirectly with True to also exercise the lazy decode path.
+    client = AsyncChClient(**clickhouse_config, lazy_decode=getattr(request, "param", False))
     try:
         alive = await client.ping(raise_on_error=True)
     except Exception as e:

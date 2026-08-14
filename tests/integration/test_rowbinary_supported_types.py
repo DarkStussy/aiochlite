@@ -14,6 +14,7 @@ from aiochlite import AsyncChClient
 pytestmark = [pytest.mark.asyncio, pytest.mark.clickhouse]
 
 
+@pytest.mark.parametrize("ch_client", [False, True], ids=["eager", "lazy"], indirect=True)
 async def test_rowbinary_supported_types(ch_client: AsyncChClient):
     query = r"""
         SELECT
@@ -105,6 +106,7 @@ async def test_rowbinary_supported_types(ch_client: AsyncChClient):
     assert row["doc_json"] == json.loads('{"a":1,"b":[true,null]}')
 
 
+@pytest.mark.parametrize("ch_client", [False, True], ids=["eager", "lazy"], indirect=True)
 async def test_rowbinary_datetime_timezone(ch_client: AsyncChClient):
     # Force the server (session) timezone so the naive wall-clock is deterministic regardless
     # of how the ClickHouse instance is configured.

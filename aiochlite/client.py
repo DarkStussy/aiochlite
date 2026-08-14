@@ -120,7 +120,9 @@ class AsyncChClient:
         password (str): ClickHouse password.
         database (str): Default database name.
         verify (bool): Verify SSL certificate.
-        lazy_decode (bool): If True, decode row values lazily per cell (faster if you access only a subset of columns).
+        lazy_decode (bool): If True, decode row values lazily per cell. Worth it only when a
+            small share of the selected columns is read; where exactly it breaks even depends on
+            how expensive the skipped columns are to decode.
         enable_compression (bool): Enable HTTP compression.
         session (ClientSession | None): Optional aiohttp session to use.
     """
@@ -133,7 +135,7 @@ class AsyncChClient:
         *,
         verify: bool = True,
         session: ClientSession | None = None,
-        lazy_decode: bool = True,
+        lazy_decode: bool = False,
         **kwargs: Unpack[ClientCoreOptions],
     ):
         self._url = url

@@ -140,6 +140,19 @@ async for row in client.stream("SELECT * FROM users"):
     print(row.name)
 ```
 
+Rows are decoded in full as they arrive. If a query selects many more columns than you actually
+read — a wide `SELECT *` where only a few fields are used — `lazy_decode=True` decodes each cell
+on first access instead:
+
+```python
+client = AsyncChClient("http://localhost:8123", lazy_decode=True)
+```
+
+In the benchmark shapes it started paying off below roughly a third of the selected columns and
+cost up to 45% when every column was read, but the break-even point depends on the column types
+and on how expensive the skipped ones are to decode. Leave it off unless your access pattern
+clearly matches, and measure your own query.
+
 ### Export Formats
 
 Get the raw server payload in any ClickHouse output format — Parquet, CSV, TSV, JSON, Arrow, ORC and more.

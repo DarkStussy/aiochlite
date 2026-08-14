@@ -33,8 +33,8 @@ What it measures:
 - End-to-end `SELECT` fetch + decode time.
 - Data is generated on the server (`INSERT ... SELECT ... FROM numbers(...)`) to avoid measuring client-side inserts.
 - Compares:
-  - `aiochlite (Row, lazy_decode=False)`: `AsyncChClient.fetch()` (returns `Row`). Because the benchmark reads
-    every column, eager decoding provides the fairest comparison. The client defaults to `lazy_decode=True`.
+  - `aiochlite (Row, lazy_decode=False)`: `AsyncChClient.fetch()` (returns `Row`), in the client's default
+    decode mode. Because the benchmark reads every column, eager decoding is also the fairest comparison.
   - `aiochlite (tuples)`: `AsyncChClient.fetch_rows()` (returns raw tuples)
   - `clickhouse-connect (async)`
   - `aiochclient`
