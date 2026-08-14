@@ -487,3 +487,107 @@ def test_adaptive_cache_stops_and_resumes_caching():
     before = computed
     assert cached(1) == "v1"
     assert computed == before
+
+
+FIXED_WIDTH_TYPES = [
+    "Bool",
+    "UInt8",
+    "Int16",
+    "UInt32",
+    "Int64",
+    "Float32",
+    "Float64",
+    "Date",
+    "Date32",
+    "DateTime('UTC')",
+    "DateTime64(3, 'UTC')",
+    "Time",
+    "Time64(6)",
+    "Enum8('a' = 1)",
+    "Enum16('a' = 1)",
+    "IPv4",
+    "IPv6",
+    "UUID",
+    "FixedString(5)",
+    "Decimal32(2)",
+    "Decimal64(2)",
+    "Decimal128(2)",
+    "Decimal256(2)",
+    "LowCardinality(UInt64)",
+]
+
+VARIABLE_WIDTH_TYPES = [
+    "String",
+    "JSON",
+    "Array(UInt8)",
+    "Map(String, UInt8)",
+    "Tuple(String, UInt8)",
+    "Nullable(UInt64)",
+    "LowCardinality(Nullable(UInt64))",
+]
+
+
+@pytest.mark.parametrize("ch_type", FIXED_WIDTH_TYPES)
+def test_fixed_width_matches_the_skipper(ch_type: str):
+    """A wrong width would silently desynchronize the whole lazy stream."""
+    width = rowbinary._fixed_width(ch_type)
+    reader = rowbinary._BinaryReader(bytes(64))
+    rowbinary._skipper_for_type(ch_type)(reader)
+
+    assert width == reader.pos
+
+
+@pytest.mark.parametrize("ch_type", VARIABLE_WIDTH_TYPES)
+def test_variable_width_types_have_no_fixed_width(ch_type: str):
+    assert rowbinary._fixed_width(ch_type) is None
+
+
+def _fixed_only_payload() -> bytes:
+    parts = [
+        _encode_varuint(3),
+        _encode_string("id"),
+        _encode_string("ts"),
+        _encode_string("price"),
+        _encode_string("UInt64"),
+        _encode_string("DateTime('UTC')"),
+        _encode_string("Decimal64(2)"),
+    ]
+    for row in range(3):
+        parts += [
+            (10 + row).to_bytes(8, "little"),
+            (1734160800 + row).to_bytes(4, "little"),
+            (12345 + row).to_bytes(8, "little", signed=True),
+        ]
+
+    return b"".join(parts)
+
+
+def _expected_fixed_only_rows() -> list[list[object]]:
+    utc = ZoneInfo("UTC")
+    return [
+        [10 + row, datetime.fromtimestamp(1734160800 + row, tz=utc), Decimal(12345 + row).scaleb(-2)]
+        for row in range(3)
+    ]
+
+
+def test_lazy_rows_of_constant_width_share_offsets():
+    payload = _fixed_only_payload()
+    _names, types, rows = parse_rowbinary_with_names_and_types_lazy(payload)
+
+    assert rowbinary._lazy_row_template(types) is not None
+    assert [[row[0], row[1], row[2]] for row in rows] == _expected_fixed_only_rows()
+
+
+def test_lazy_constant_width_rows_survive_chunk_splits():
+    payload = _fixed_only_payload()
+
+    async def _chunks():
+        for i in range(0, len(payload), 5):
+            yield payload[i : i + 5]
+
+    async def _run():
+        parser = RowBinaryWithNamesAndTypesStreamParser(_chunks(), lazy=True)
+        await parser.read_header()
+        return [[row[0], row[1], row[2]] async for row in parser.rows()]
+
+    assert asyncio.run(_run()) == _expected_fixed_only_rows()

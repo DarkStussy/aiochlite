@@ -142,6 +142,10 @@ class _BinaryReader:
     def pos(self) -> int:
         return self._pos
 
+    @pos.setter
+    def pos(self, value: int):
+        self._pos = value
+
     def skip(self, size: int):
         end = self._pos + size
         if end > len(self._data):
@@ -969,14 +973,64 @@ def _skipper_for_type(ch_type: str) -> Callable[[_Reader], None]:
     raise ValueError(f"Unsupported RowBinary type: {ch_type}")
 
 
+# Fixed-width types missing from _FIXED_SIZES because the skippers special-case them.
+_WIDE_FIXED_SIZES: dict[str, int] = {"DateTime64": 8, "Time64": 8, "UUID": 16}
+
+
+def _fixed_width(ch_type: str) -> int | None:
+    """Byte width of a column that RowBinary always stores at the same size, else None."""
+    if "Nullable(" in ch_type:
+        return None
+
+    unwrapped = unwrap_wrappers(ch_type)
+    base = extract_base_type(unwrapped)
+
+    size = _FIXED_SIZES.get(base) or _WIDE_FIXED_SIZES.get(base)
+    if size is not None:
+        return size
+
+    if base == "FixedString":
+        return int(unwrapped[unwrapped.index("(") + 1 : unwrapped.rindex(")")].strip())
+    if base.startswith("Decimal"):
+        precision, _ = _decimal_meta(unwrapped)
+        return _decimal_size(precision)
+
+    return None
+
+
+def _lazy_row_template(types: list[str]) -> tuple[list[int], int] | None:
+    """Cell offsets and row width shared by every row, or None if some column varies in size."""
+    offsets: list[int] = []
+    width = 0
+    for ch_type in types:
+        size = _fixed_width(ch_type)
+        if size is None:
+            return None
+        offsets.append(width)
+        width += size
+
+    # A zero-width row would never advance the reader, so fall back to the skipper path.
+    return (offsets, width) if width else None
+
+
 class RowBinaryLazyValues(Sequence[Any]):
-    __slots__ = ("_cache", "_data", "_offsets", "_readers")
+    """Row decoding each cell on first access. Offsets are relative to ``base``, so rows of
+    constant width can share one offset list."""
+
+    __slots__ = ("_base", "_cache", "_offsets", "_reader", "_readers")
     _MISSING = object()
 
-    def __init__(self, data: memoryview, offsets: list[tuple[int, int]], readers: list[Callable[[_Reader], Any]]):
-        self._data = data
+    def __init__(
+        self,
+        reader: _BinaryReader,
+        offsets: list[int],
+        readers: list[Callable[[_Reader], Any]],
+        base: int = 0,
+    ):
+        self._reader = reader
         self._offsets = offsets
         self._readers = readers
+        self._base = base
         self._cache: list[Any] = [self._MISSING] * len(offsets)
 
     def __len__(self) -> int:
@@ -985,19 +1039,20 @@ class RowBinaryLazyValues(Sequence[Any]):
     def __getitem__(self, idx: int) -> Any:
         if idx < 0:
             idx += len(self._offsets)
-        cached = self._cache[idx]
-        if cached is not self._MISSING:
-            return cached
+        value = self._cache[idx]
+        if value is not self._MISSING:
+            return value
 
-        start, end = self._offsets[idx]
-        reader = _BinaryReader(self._data[start:end])
+        reader = self._reader
+        reader.pos = self._base + self._offsets[idx]
         value = self._readers[idx](reader)
         self._cache[idx] = value
         return value
 
 
 def parse_rowbinary_with_names_and_types_lazy(
-    data: bytes, server_tz: ZoneInfo | None = None
+    data: bytes,
+    server_tz: ZoneInfo | None = None,
 ) -> tuple[list[str], list[str], Iterable[RowBinaryLazyValues]]:
     """
     Parse RowBinaryWithNamesAndTypes payload and return rows with lazy per-cell decoding.
@@ -1011,19 +1066,29 @@ def parse_rowbinary_with_names_and_types_lazy(
     column_count = reader.read_varuint()
     names = [reader.read_string() for _ in range(column_count)]
     types = [reader.read_string() for _ in range(column_count)]
-    skippers = [_skipper_for_type(tp) for tp in types]
     readers = [_reader_for_type(tp, server_tz) for tp in types]
-    payload = memoryview(data)
+    # Kept independent of the reader walking the rows: a cell may be read mid-iteration.
+    value_reader = _BinaryReader(data)
+    template = _lazy_row_template(types)
 
-    def _rows() -> Iterable[RowBinaryLazyValues]:
-        while not reader.eof:
-            offsets: list[tuple[int, int]] = []
-            for skip in skippers:
-                start = reader.pos
-                skip(reader)
-                end = reader.pos
-                offsets.append((start, end))
-            yield RowBinaryLazyValues(payload, offsets, readers)
+    if template is not None:
+        row_offsets, row_width = template
+
+        def _rows() -> Iterable[RowBinaryLazyValues]:
+            while not reader.eof:
+                base = reader.pos
+                reader.skip(row_width)
+                yield RowBinaryLazyValues(value_reader, row_offsets, readers, base)
+    else:
+        skippers = [_skipper_for_type(tp) for tp in types]
+
+        def _rows() -> Iterable[RowBinaryLazyValues]:
+            while not reader.eof:
+                offsets: list[int] = []
+                for skip in skippers:
+                    offsets.append(reader.pos)
+                    skip(reader)
+                yield RowBinaryLazyValues(value_reader, offsets, readers)
 
     return names, types, _rows()
 
@@ -1202,6 +1267,7 @@ class RowBinaryWithNamesAndTypesStreamParser:
         self._readers: list[Callable[[_Reader], Any]] | None = None
         self._read_row: Callable[[_Reader], list[Any]] | None = None
         self._skippers: list[Callable[[_Reader], None]] | None = None
+        self._row_template: tuple[list[int], int] | None = None
         self._lazy = lazy
         self._server_tz = server_tz
 
@@ -1228,7 +1294,8 @@ class RowBinaryWithNamesAndTypesStreamParser:
                 self._types = types
                 self._readers = [_reader_for_type(tp, self._server_tz) for tp in types]
                 if self._lazy:
-                    self._skippers = [_skipper_for_type(tp) for tp in types]
+                    self._row_template = _lazy_row_template(types)
+                    self._skippers = None if self._row_template else [_skipper_for_type(tp) for tp in types]
                     self._read_row = None
                 else:
                     self._skippers = None
@@ -1252,21 +1319,24 @@ class RowBinaryWithNamesAndTypesStreamParser:
             checkpoint = self._reader.pos
             try:
                 if self._lazy:
-                    assert self._skippers is not None
                     row_start = self._reader.pos
-                    offsets: list[tuple[int, int]] = []
-                    for skip in self._skippers:
-                        cell_start = self._reader.pos
-                        skip(self._reader)
-                        cell_end = self._reader.pos
-                        offsets.append((cell_start - row_start, cell_end - row_start))
-                    row_end = self._reader.pos
-                    row_bytes = self._reader.copy_slice(row_start, row_end)
-                    yield RowBinaryLazyValues(memoryview(row_bytes), offsets, self._readers)
+                    if self._row_template is not None:
+                        offsets, row_width = self._row_template
+                        self._reader.skip(row_width)
+                    else:
+                        assert self._skippers is not None
+                        offsets = []
+                        for skip in self._skippers:
+                            offsets.append(self._reader.pos - row_start)
+                            skip(self._reader)
+                    # The streaming buffer keeps moving, so each row needs its own copy.
+                    row_bytes = self._reader.copy_slice(row_start, self._reader.pos)
+                    yield RowBinaryLazyValues(_BinaryReader(row_bytes), offsets, self._readers)
                 elif read_row is not None:
                     yield read_row(self._reader)
                 else:
                     yield [read(self._reader) for read in self._readers]
+
                 self._reader.compact()
             except _NeedMoreData:
                 self._reader.pos = checkpoint
