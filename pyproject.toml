@@ -2,15 +2,28 @@
 name = "aiochlite"
 version = "1.6.0"
 authors = [{ name = "darkstussy" }, ]
-description = "Lightweight asynchronous ClickHouse client for Python built on asyncio."
+description = "Lightweight asynchronous ClickHouse client for Python built on aiohttp."
 readme = "README.md"
-license = { file = "LICENSE" }
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.12"
+keywords = [
+    "clickhouse",
+    "clickhouse-client",
+    "async",
+    "asyncio",
+    "aiohttp",
+    "database",
+    "driver",
+    "olap",
+    "analytics",
+]
 dependencies = [
     "aiohttp>=3.13,<4",
     "tzdata; platform_system == 'Windows'"
 ]
 classifiers = [
+    "Development Status :: 5 - Production/Stable",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -18,8 +31,10 @@ classifiers = [
     "Framework :: AsyncIO",
     "Intended Audience :: Developers",
     "Operating System :: OS Independent",
-    "Topic :: Internet :: WWW/HTTP :: Indexing/Search",
-    "Topic :: Software Development :: Libraries :: Application Frameworks",
+    "Topic :: Database",
+    "Topic :: Database :: Front-Ends",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
 ]
 
 [project.optional-dependencies]
@@ -29,6 +44,9 @@ aiohttp-speedups = [
 
 [project.urls]
 Homepage = "https://github.com/darkstussy/aiochlite"
+Documentation = "https://github.com/darkstussy/aiochlite#readme"
+Changelog = "https://github.com/darkstussy/aiochlite/blob/main/CHANGELOG.md"
+Repository = "https://github.com/darkstussy/aiochlite"
 Issues = "https://github.com/darkstussy/aiochlite/issues"
 
 [build-system]
