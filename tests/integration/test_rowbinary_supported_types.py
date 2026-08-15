@@ -40,6 +40,7 @@ async def test_rowbinary_supported_types(ch_client: AsyncChClient):
             CAST('01:01:01' AS Time) AS t,
             CAST('-01:01:01' AS Time) AS t_neg,
             CAST('01:01:01.123456' AS Time64(6)) AS t64,
+            CAST('01:01:01.123456789' AS Time64(9)) AS t64_9,
             CAST('123.45' AS Decimal(10, 2)) AS dec,
             CAST('123.45' AS Decimal32(2)) AS dec32,
             CAST('123.45' AS Decimal64(2)) AS dec64,
@@ -52,6 +53,8 @@ async def test_rowbinary_supported_types(ch_client: AsyncChClient):
             ['foo', 'bar'] AS arr_s,
             CAST([NULL, 'x', NULL] AS Array(Nullable(String))) AS arr_ns,
             tuple('meta', toInt8(7)) AS t1,
+            tuple('meta', toInt8(7), toUInt16(513)) AS t3,
+            tuple('meta', toInt8(7), toUInt16(513), toFloat64(0.5)) AS t4,
             map('a', toInt32(1), 'b', toInt32(-2)) AS m,
             toLowCardinality('x') AS lc_s,
             CAST(NULL AS Nullable(String)) AS n_s,
@@ -88,6 +91,8 @@ async def test_rowbinary_supported_types(ch_client: AsyncChClient):
     assert row["t"] == timedelta(seconds=3661)
     assert row["t_neg"] == timedelta(seconds=-3661)
     assert row["t64"] == timedelta(seconds=3661, microseconds=123456)
+    # Time64(P) carries more precision than timedelta below microseconds, so P > 6 is truncated.
+    assert row["t64_9"] == timedelta(seconds=3661, microseconds=123456)
     assert row["dec"] == Decimal("123.45")
     assert row["dec32"] == Decimal("123.45")
     assert row["dec64"] == Decimal("123.45")
@@ -100,6 +105,8 @@ async def test_rowbinary_supported_types(ch_client: AsyncChClient):
     assert row["arr_s"] == ["foo", "bar"]
     assert row["arr_ns"] == [None, "x", None]
     assert row["t1"] == ("meta", 7)
+    assert row["t3"] == ("meta", 7, 513)
+    assert row["t4"] == ("meta", 7, 513, 0.5)
     assert row["m"] == {"a": 1, "b": -2}
     assert row["lc_s"] == "x"
     assert row["n_s"] is None

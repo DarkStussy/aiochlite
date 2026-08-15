@@ -190,32 +190,84 @@ def test_parse_rowbinary_datetime_server_timezone_fallback():
     assert parsed[0][3][0].tzinfo is None
 
 
+def test_parse_rowbinary_datetime64_below_a_microsecond():
+    """DateTime64(P > 6) carries digits Python cannot hold, cut toward zero as the server narrows."""
+    after = int(datetime(2025, 12, 14, 10, 0, 0, tzinfo=ZoneInfo("UTC")).timestamp()) * 10**9 + 123_456_789
+    before = int(datetime(1960, 1, 1, 10, 0, 0, tzinfo=ZoneInfo("UTC")).timestamp()) * 10**9 + 123_456_789
+    parts = [
+        _encode_varuint(2),
+        _encode_string("after"),
+        _encode_string("before"),
+        _encode_string("DateTime64(9, 'UTC')"),
+        _encode_string("DateTime64(9, 'UTC')"),
+        after.to_bytes(8, "little", signed=True),
+        before.to_bytes(8, "little", signed=True),
+    ]
+
+    _, _, rows = parse_rowbinary_with_names_and_types(b"".join(parts))
+    parsed = list(rows)
+
+    assert parsed[0][0] == datetime(2025, 12, 14, 10, 0, 0, 123_456, tzinfo=ZoneInfo("UTC"))
+    # Before the epoch the ticks are negative, so cutting toward zero moves the fraction up.
+    assert parsed[0][1] == datetime(1960, 1, 1, 10, 0, 0, 123_457, tzinfo=ZoneInfo("UTC"))
+
+
 def test_parse_rowbinary_time_and_time64():
     parts = [
-        _encode_varuint(4),
+        _encode_varuint(6),
         _encode_string("t"),
         _encode_string("t_neg"),
         _encode_string("t64"),
         _encode_string("t64_neg"),
+        _encode_string("t64_9"),
+        _encode_string("t64_9_neg"),
         _encode_string("Time"),
         _encode_string("Time"),
         _encode_string("Time64(3)"),
         _encode_string("Time64(6)"),
+        _encode_string("Time64(9)"),
+        _encode_string("Time64(9)"),
         (3661).to_bytes(4, "little", signed=True),
         (-3661).to_bytes(4, "little", signed=True),
         (3_661_123).to_bytes(8, "little", signed=True),
         (-3_661_000_500).to_bytes(8, "little", signed=True),
+        (3_661_123_456_789).to_bytes(8, "little", signed=True),
+        (-3_661_123_456_789).to_bytes(8, "little", signed=True),
     ]
 
     names, types, rows = parse_rowbinary_with_names_and_types(b"".join(parts))
     parsed = list(rows)
 
-    assert names == ["t", "t_neg", "t64", "t64_neg"]
-    assert types == ["Time", "Time", "Time64(3)", "Time64(6)"]
+    assert names == ["t", "t_neg", "t64", "t64_neg", "t64_9", "t64_9_neg"]
+    assert types == ["Time", "Time", "Time64(3)", "Time64(6)", "Time64(9)", "Time64(9)"]
     assert parsed[0][0] == timedelta(seconds=3661)
     assert parsed[0][1] == timedelta(seconds=-3661)
     assert parsed[0][2] == timedelta(seconds=3661, microseconds=123_000)
     assert parsed[0][3] == timedelta(seconds=-3661, microseconds=-500)
+    # Below a microsecond the value is cut toward zero, symmetrically and as the server narrows it.
+    assert parsed[0][4] == timedelta(seconds=3661, microseconds=123_456)
+    assert parsed[0][5] == timedelta(seconds=-3661, microseconds=-123_456)
+
+
+def test_parse_rowbinary_time64_at_the_microsecond_boundary():
+    """A tick short of a microsecond must vanish on both sides rather than round outward."""
+    ticks = [999, 1000, -999, -1000]
+    parts = [
+        _encode_varuint(len(ticks)),
+        *(_encode_string(f"t{index}") for index in range(len(ticks))),
+        *(_encode_string("Time64(9)") for _ in ticks),
+        *(value.to_bytes(8, "little", signed=True) for value in ticks),
+    ]
+
+    _, _, rows = parse_rowbinary_with_names_and_types(b"".join(parts))
+    parsed = list(rows)
+
+    assert list(parsed[0]) == [
+        timedelta(0),
+        timedelta(microseconds=1),
+        timedelta(0),
+        timedelta(microseconds=-1),
+    ]
 
 
 def test_parse_rowbinary_time_in_array_and_nullable():

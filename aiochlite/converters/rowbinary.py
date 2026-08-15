@@ -248,7 +248,9 @@ def _time64_converter(ch_type: str) -> Callable[[int], timedelta]:
 
         @lru_cache(maxsize=_VALUE_CACHE_SIZE)
         def _convert(ticks: int) -> timedelta:
-            return timedelta(microseconds=ticks // divisor)
+            # Truncated toward zero, as the server itself narrows: `//` would push a negative
+            # value one microsecond further from it.
+            return timedelta(microseconds=-(-ticks // divisor) if ticks < 0 else ticks // divisor)
 
     return _convert
 
@@ -273,12 +275,23 @@ def _datetime64_converter(ch_type: str, server_tz: ZoneInfo | None) -> Callable[
     tz = explicit_tz or server_tz
     strip_tz = explicit_tz is None
 
+    if scale <= 6:
+        multiplier = 10 ** (6 - scale)
+
+        def _to_micros(ticks: int) -> int:
+            return ticks * multiplier
+    else:
+        divisor = 10 ** (scale - 6)
+
+        def _to_micros(ticks: int) -> int:
+            # Truncated toward zero, as the server itself narrows.
+            return -(-ticks // divisor) if ticks < 0 else ticks // divisor
+
     @lru_cache(maxsize=_VALUE_CACHE_SIZE)
     def _convert(ticks: int) -> datetime:
-        base_seconds, remainder = divmod(ticks, 10**scale)
+        base_seconds, micros = divmod(_to_micros(ticks), 1_000_000)
         dt = datetime.fromtimestamp(base_seconds, tz=tz)
-        if remainder:
-            micros = remainder * (10 ** (6 - scale)) if scale <= 6 else remainder / (10 ** (scale - 6))
+        if micros:
             dt = dt + timedelta(microseconds=micros)
         return dt.replace(tzinfo=None) if strip_tz else dt
 

@@ -41,6 +41,8 @@
   text, burying the server message under megabytes of payload.
 - A 64-bit integer inside a `JSON` column decoded as a string on servers older than 25.8, which
   quote them by default.
+- `Time64(P)` and `DateTime64(P)` with `P > 6` were off by one microsecond for some values.
+  Digits below a microsecond are now cut toward zero, as the server itself narrows them.
 
 ## 1.4.1 (2026-08-15)
 
