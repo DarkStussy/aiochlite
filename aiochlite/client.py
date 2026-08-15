@@ -1,7 +1,7 @@
 import re
 import warnings
 from collections.abc import AsyncGenerator, AsyncIterator
-from contextlib import aclosing, contextmanager
+from contextlib import aclosing, contextmanager, suppress
 from typing import Any, Generator, Literal, Mapping, Self, Sequence, TypedDict, Unpack
 
 from aiohttp import ClientSession, FormData, TCPConnector
@@ -173,8 +173,9 @@ class AsyncChClient:
     async def __aenter__(self) -> Self:
         try:
             await self.ping(raise_on_error=True)
-        except ChClientError:
-            await self.close()
+        except BaseException:
+            with suppress(Exception):
+                await self.close()
             raise
 
         return self
