@@ -177,3 +177,8 @@ async def test_datetime_param_with_microseconds_is_rejected(ch_client: AsyncChCl
 
     value = await ch_client.fetchval("SELECT {v:DateTime}", params={"v": datetime(2024, 1, 1, 12, 0, 0)})
     assert value == datetime(2024, 1, 1, 12, 0, 0)
+
+
+async def test_settings_cannot_override_query_params(ch_client: AsyncChClient):
+    value = await ch_client.fetchval("SELECT {x:UInt8}", params={"x": 1}, settings={"param_x": 9})
+    assert value == 1

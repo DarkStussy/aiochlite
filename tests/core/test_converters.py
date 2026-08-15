@@ -4,7 +4,7 @@ from decimal import Decimal
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-from aiochlite.converters import to_clickhouse, to_json
+from aiochlite.converters import quote_identifier, to_clickhouse, to_json
 
 
 class TestToClickHouse:
@@ -262,3 +262,23 @@ class TestToJson:
         result = to_json(data)
         parsed = json.loads(result)
         assert parsed == [[1, 2], [3, 4], [5, 6]]
+
+
+class TestQuoteIdentifier:
+    """Tests for identifier quoting, used where the server cannot quote for us."""
+
+    def test_plain_name(self):
+        assert quote_identifier("name") == "`name`"
+
+    def test_backquote_is_escaped(self):
+        assert quote_identifier("a`b") == "`a\\`b`"
+
+    def test_backslash_is_escaped(self):
+        """ClickHouse reads backslash escapes inside backquotes, so the backslash needs one too."""
+        assert quote_identifier("a\\b") == "`a\\\\b`"
+
+    def test_backslash_before_backquote(self):
+        assert quote_identifier("a\\`b") == "`a\\\\\\`b`"
+
+    def test_injection_attempt_stays_one_name(self):
+        assert quote_identifier("a) VALUES (1); DROP TABLE t --") == "`a) VALUES (1); DROP TABLE t --`"

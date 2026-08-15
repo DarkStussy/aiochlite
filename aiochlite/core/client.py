@@ -58,12 +58,12 @@ class ChClientCore:
         if self._enable_compression:
             url_params["enable_http_compression"] = "1"
 
+        if settings:
+            url_params.update(settings)
+
         if params:
             for key, value in params.items():
                 url_params[f"param_{key}"] = to_clickhouse(value)
-
-        if settings:
-            url_params.update(settings)
 
         if external_tables:
             for name, external_table in external_tables.items():

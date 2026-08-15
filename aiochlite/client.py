@@ -6,7 +6,7 @@ from typing import Any, Generator, Literal, Mapping, Self, Sequence, TypedDict, 
 
 from aiohttp import ClientSession, FormData, TCPConnector
 
-from .converters import to_json
+from .converters import quote_identifier, to_json
 from .converters._type_parsing import parse_timezone
 from .converters.rowbinary import (
     RowBinaryWithNamesAndTypesStreamParser,
@@ -449,10 +449,6 @@ class AsyncChClient:
         if not data:
             return
 
-        db = database or self._database
-
-        columns_clause = f" ({', '.join(column_names)})" if column_names else ""
-
         if isinstance(data[0], dict):
             format_name = "JSONEachRow"
             rows = (to_json(row) for row in data)
@@ -460,8 +456,14 @@ class AsyncChClient:
             format_name = "JSONCompactEachRow"
             rows = (to_json(list(row)) for row in data)
 
+        columns_clause = f" ({', '.join(quote_identifier(name) for name in column_names)})" if column_names else ""
+        statement = f"INSERT INTO {{_db:Identifier}}.{{_table:Identifier}}{columns_clause} FORMAT {format_name}\n"
+
         await self._http_client.post(
             self._url,
-            params=self._core.build_query_params(settings=settings),
-            data=build_insert_body(f"INSERT INTO {db}.{table}{columns_clause} FORMAT {format_name}\n", rows),
+            params=self._core.build_query_params(
+                params={"_db": database or self._database, "_table": table},
+                settings=settings,
+            ),
+            data=build_insert_body(statement, rows),
         )

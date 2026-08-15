@@ -8,7 +8,8 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from aiochlite import AsyncChClient
+from aiochlite import AsyncChClient, ChServerError
+from aiochlite.converters import quote_identifier
 
 from ._types import TableFactory
 
@@ -167,3 +168,49 @@ async def test_insert_datetime64_preserves_precision_and_instant(ch_client: Asyn
     assert row is not None
     assert row["n"].replace(tzinfo=None) == naive
     assert row["a"] == aware
+
+
+async def test_insert_survives_injection_through_table_name(ch_client: AsyncChClient, make_table: TableFactory):
+    """The server quotes the table name, so a payload cannot break out of it."""
+    table = await make_table(a="UInt32")
+    await ch_client.insert(table, [(1,)], column_names=("a",))
+
+    with pytest.raises(ChServerError):
+        await ch_client.insert(f"{table}; DROP TABLE {table}", [(2,)], column_names=("a",))
+
+    assert await ch_client.fetchval(f"SELECT count() FROM {table}") == 1
+
+
+async def test_insert_survives_injection_through_column_name(ch_client: AsyncChClient, make_table: TableFactory):
+    """The column list takes no parameters, so those names are quoted by the client."""
+    table = await make_table(a="UInt32")
+    await ch_client.insert(table, [(1,)], column_names=("a",))
+
+    with pytest.raises(ChServerError):
+        await ch_client.insert(table, [(2,)], column_names=(f"a) VALUES (99); DROP TABLE {table} --",))
+
+    assert await ch_client.fetchval(f"SELECT count() FROM {table}") == 1
+
+
+async def test_insert_into_names_needing_quotes(ch_client: AsyncChClient):
+    """Names with spaces and backquotes were impossible before they were quoted."""
+    table = "odd table`name"
+    quoted = quote_identifier(table)
+    await ch_client.execute(f"DROP TABLE IF EXISTS {quoted}")
+    await ch_client.execute(f"CREATE TABLE {quoted} (`odd col` UInt32) ENGINE = Memory")
+    try:
+        await ch_client.insert(table, [(7,)], column_names=("odd col",))
+        assert await ch_client.fetchval(f"SELECT `odd col` FROM {quoted}") == 7
+    finally:
+        await ch_client.execute(f"DROP TABLE {quoted}")
+
+
+async def test_settings_cannot_redirect_the_insert(ch_client: AsyncChClient, make_table: TableFactory):
+    """`param_*` is not a setting; letting one through would rewrite the target table."""
+    expected = await make_table(a="UInt32")
+    other = await make_table(a="UInt32")
+
+    await ch_client.insert(expected, [(1,)], column_names=("a",), settings={"param__table": other})
+
+    assert await ch_client.fetchval(f"SELECT count() FROM {expected}") == 1
+    assert await ch_client.fetchval(f"SELECT count() FROM {other}") == 0

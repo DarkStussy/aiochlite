@@ -52,6 +52,20 @@ class _MissingType:
 _MISSING = _MissingType()
 
 
+def quote_identifier(name: str) -> str:
+    """
+    Quote a database, table or column name for use in a query.
+
+    Args:
+        name (str): Identifier to quote.
+
+    Returns:
+        str: Backquoted identifier.
+    """
+    escaped = name.replace("\\", "\\\\").replace("`", "\\`")
+    return f"`{escaped}`"
+
+
 def _escape_ch_string_literal(value: str) -> str:
     return (
         value.replace("\\", "\\\\")
