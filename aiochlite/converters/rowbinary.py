@@ -10,6 +10,8 @@ from typing import Any, Callable, Iterable, Literal, Protocol, overload
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
+from aiochlite.exceptions import ChProtocolError
+
 from ._type_parsing import extract_base_type, extract_timezone, split_type_arguments, unwrap_wrappers
 
 
@@ -1014,7 +1016,12 @@ class RowBinaryLazyValues(Sequence[Any]):
 
         reader = self._reader
         reader.pos = self._base + self._offsets[idx]
-        value = self._readers[idx](reader)
+        # Decoding happens here rather than in the query call, so the boundary has to be here too.
+        try:
+            value = self._readers[idx](reader)
+        except ValueError as error:
+            raise ChProtocolError(str(error)) from error
+
         self._cache[idx] = value
         return value
 

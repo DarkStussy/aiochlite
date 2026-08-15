@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import pytest
+from aiohttp import ClientSession
 
-from aiochlite import AsyncChClient, ChClientError
+from aiochlite import AsyncChClient, ChClientError, ChProtocolError, ChServerError, ChTransportError
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.clickhouse]
 
@@ -62,3 +63,44 @@ async def test_large_result_still_streams_to_the_end(ch_client: AsyncChClient):
         assert len(row["s"]) == 200
 
     assert total == 50000
+
+
+async def test_unreachable_server_raises_transport_error():
+    """aiohttp exceptions must not cross the client boundary."""
+    client = AsyncChClient("http://localhost:9")
+    try:
+        with pytest.raises(ChTransportError):
+            await client.fetch("SELECT 1")
+
+        assert await client.ping() is False
+        with pytest.raises(ChTransportError):
+            await client.ping(raise_on_error=True)
+    finally:
+        await client.close()
+
+
+async def test_server_error_carries_metadata(ch_client: AsyncChClient):
+    with pytest.raises(ChServerError) as error:
+        await ch_client.fetch("SELEC 1")
+
+    assert error.value.status == 400
+    assert error.value.code == 62
+    assert error.value.query_id
+
+
+async def test_failed_context_entry_closes_the_session():
+    """__aexit__ never runs when __aenter__ raises, so the session has to be closed there."""
+    session = ClientSession()
+    with pytest.raises(ChTransportError):
+        async with AsyncChClient("http://localhost:9", session=session):
+            pass
+
+    assert session.closed
+
+
+@pytest.mark.parametrize("ch_client", [True], ids=["lazy"], indirect=True)
+async def test_lazy_decoding_reports_a_protocol_error(ch_client: AsyncChClient):
+    """Lazy cells decode on access, well after the query call returned."""
+    rows = await ch_client.fetch("SELECT reinterpretAsString(toUInt16(65533)) AS s")
+    with pytest.raises(ChProtocolError):
+        rows[0]["s"]

@@ -3,10 +3,11 @@ from typing import Any, AsyncIterator, cast
 import pytest
 from aiohttp import ClientResponse
 
-from aiochlite.exceptions import ChClientError
+from aiochlite.exceptions import ChClientError, ChServerError
 from aiochlite.http_client import _error_text, _exception_sentinel, _read_chunks
 
 _TAG = "abcdefghijklmnop"
+_QUERY_ID = "8b95869b-2ba6-416f-a812-fe004b68a095"
 _SENTINEL = _exception_sentinel(_TAG)
 _MESSAGE = b"Code: 395. DB::Exception: boom. (FUNCTION_THROW_IF_VALUE_IS_NON_ZERO)"
 _BLOCK = _SENTINEL + _MESSAGE + b"\n" + f"{len(_MESSAGE) + 1} {_TAG}".encode() + b"\r\n__exception__\r\n"
@@ -29,7 +30,8 @@ class _FakeContent:
 def _response(chunks: list[bytes], tag: str | None = _TAG) -> ClientResponse:
     fake: Any = type("_FakeResponse", (), {})()
     fake.content = _FakeContent(chunks)
-    fake.headers = {"X-ClickHouse-Exception-Tag": tag} if tag else {}
+    fake.status = 200
+    fake.headers = {"X-ClickHouse-Exception-Tag": tag, "X-ClickHouse-Query-Id": _QUERY_ID} if tag else {}
     return cast(ClientResponse, fake)
 
 
@@ -97,3 +99,17 @@ def test_error_text_skips_a_large_partial_payload():
 
 def test_error_text_reads_the_exception_block():
     assert _error_text(b"\x00" * 20_000 + _BLOCK, _TAG) == _MESSAGE.decode()
+
+
+async def test_body_exception_carries_response_metadata():
+    """Observability: the error must say which query it was and what code came back."""
+    payload = b"DATA" + _BLOCK
+    with pytest.raises(ChServerError) as error:
+        async for _ in _read_chunks(_response([payload])):
+            pass
+
+    assert error.value.status == 200
+    assert error.value.code == 395
+    assert error.value.query_id == _QUERY_ID
+    assert error.value.exception_tag == _TAG
+    assert str(error.value) == _MESSAGE.decode()

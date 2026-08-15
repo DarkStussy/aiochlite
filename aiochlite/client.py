@@ -1,7 +1,8 @@
 import re
 import warnings
 from collections.abc import AsyncIterator
-from typing import Any, Literal, Mapping, Self, Sequence, TypedDict, Unpack
+from contextlib import contextmanager
+from typing import Any, Generator, Literal, Mapping, Self, Sequence, TypedDict, Unpack
 
 from aiohttp import ClientSession, FormData, TCPConnector
 
@@ -13,7 +14,7 @@ from .converters.rowbinary import (
     parse_rowbinary_with_names_and_types_lazy,
 )
 from .core import ChClientCore, ClientCoreOptions, ExternalTable, Row, build_external_data
-from .exceptions import ChClientError
+from .exceptions import ChClientError, ChProtocolError
 from .http_client import HttpClient
 
 _COMMENT_OR_LITERAL_RE = re.compile(
@@ -88,6 +89,15 @@ def _has_format_clause(query: str) -> bool:
     return _FORMAT_CLAUSE_RE.search(_COMMENT_OR_LITERAL_RE.sub(" ", query)) is not None
 
 
+@contextmanager
+def _decoding() -> Generator[None, None, None]:
+    """A payload that fails to decode is a bad response, not a bad call."""
+    try:
+        yield
+    except ValueError as error:
+        raise ChProtocolError(str(error)) from error
+
+
 def _warn_deprecated(old: str, new: str):
     """Warn that `old` is deprecated in favor of `new`.
 
@@ -149,7 +159,12 @@ class AsyncChClient:
         self._http_client = HttpClient(session)
 
     async def __aenter__(self) -> Self:
-        await self.ping(raise_on_error=True)
+        try:
+            await self.ping(raise_on_error=True)
+        except ChClientError:
+            await self.close()
+            raise
+
         return self
 
     async def __aexit__(self, *args):
@@ -221,23 +236,25 @@ class AsyncChClient:
                 lazy=self._lazy_decode,
                 server_tz=parse_timezone(tz),
             )
-            names, _ = await parser.read_header()
+            with _decoding():
+                names, _ = await parser.read_header()
 
-            index = {name: idx for idx, name in enumerate(names)}
-            async for values in parser.rows():
-                yield Row(names, values, index=index)
+                index = {name: idx for idx, name in enumerate(names)}
+                async for values in parser.rows():
+                    yield Row(names, values, index=index)
 
     async def _fetch(self, params: dict[str, Any], data: str | FormData) -> list[Row]:
         payload, tz = await self._http_client.read(self._url, params=params, data=data)
         server_tz = parse_timezone(tz)
-        names, _, rows = (
-            parse_rowbinary_with_names_and_types_lazy(payload, server_tz)
-            if self._lazy_decode
-            else parse_rowbinary_with_names_and_types(payload, server_tz)
-        )
+        with _decoding():
+            names, _, rows = (
+                parse_rowbinary_with_names_and_types_lazy(payload, server_tz)
+                if self._lazy_decode
+                else parse_rowbinary_with_names_and_types(payload, server_tz)
+            )
 
-        index = {name: idx for idx, name in enumerate(names)}
-        return [Row(names, values, index=index) for values in rows]
+            index = {name: idx for idx, name in enumerate(names)}
+            return [Row(names, values, index=index) for values in rows]
 
     async def execute(self, query: str, **kwargs: Unpack[QueryOptions]):
         """Execute query without returning results.
@@ -273,10 +290,11 @@ class AsyncChClient:
         params, data = self._prepare_query(query, **kwargs)
         async with self._http_client.stream(self._url, params=params, data=data) as (tz, byte_chunks):
             parser = RowBinaryWithNamesAndTypesStreamParser(byte_chunks, lazy=False, server_tz=parse_timezone(tz))
-            await parser.read_header()
+            with _decoding():
+                await parser.read_header()
 
-            async for values in parser.rows():
-                yield tuple(values)
+                async for values in parser.rows():
+                    yield tuple(values)
 
     async def fetch(self, query: str, **kwargs: Unpack[QueryOptions]) -> list[Row]:
         """Execute query and fetch all results.
@@ -301,8 +319,9 @@ class AsyncChClient:
         """
         params, data = self._prepare_query(query, **kwargs)
         payload, tz = await self._http_client.read(self._url, params=params, data=data)
-        _, _, rows = parse_rowbinary_with_names_and_types(payload, parse_timezone(tz), as_tuple=True)
-        return list(rows)
+        with _decoding():
+            _, _, rows = parse_rowbinary_with_names_and_types(payload, parse_timezone(tz), as_tuple=True)
+            return list(rows)
 
     async def fetchone(self, query: str, **kwargs: Unpack[QueryOptions]) -> Row | None:
         """Execute query and fetch first result row.

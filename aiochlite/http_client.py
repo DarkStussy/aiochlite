@@ -1,13 +1,18 @@
-from contextlib import asynccontextmanager
+import re
+from contextlib import asynccontextmanager, contextmanager
 from http import HTTPStatus
-from typing import Any, AsyncGenerator, AsyncIterator, Mapping
+from typing import Any, AsyncGenerator, AsyncIterator, Generator, Mapping
 
-from aiohttp import ClientResponse, ClientSession
+from aiohttp import ClientError, ClientResponse, ClientSession
 
-from .exceptions import ChClientError
+from .exceptions import ChServerError, ChTransportError
 
 _TIMEZONE_HEADER = "X-ClickHouse-Timezone"
 _EXCEPTION_TAG_HEADER = "X-ClickHouse-Exception-Tag"
+_EXCEPTION_CODE_HEADER = "X-ClickHouse-Exception-Code"
+_QUERY_ID_HEADER = "X-ClickHouse-Query-Id"
+
+_ERROR_CODE_RE = re.compile(r"^Code:\s*(\d+)")
 
 # A query that fails after the response started still returns 200, with the error appended to the
 # body in any output format. The block is the last thing on the wire and holds at most 16 KiB.
@@ -15,6 +20,31 @@ _EXCEPTION_MARKER = b"\r\n__exception__\r\n"
 _MARKER_FIRST_BYTE = _EXCEPTION_MARKER[:1]
 _MAX_EXCEPTION_BLOCK = 16 * 1024
 _CHUNK_SIZE = 262_144
+
+
+@contextmanager
+def _transport_boundary() -> Generator[None, None, None]:
+    """Keep aiohttp exceptions out of the public API. ``CancelledError`` is not an ``Exception``."""
+    try:
+        yield
+    except (ClientError, TimeoutError) as error:
+        raise ChTransportError(str(error) or type(error).__name__) from error
+
+
+def _server_error(message: str, response: ClientResponse) -> ChServerError:
+    """Attach the response metadata that makes a server error traceable in `system.query_log`."""
+    header_code = response.headers.get(_EXCEPTION_CODE_HEADER)
+    # The code is only known upfront when the status carries the error; otherwise it is in the text.
+    matched = _ERROR_CODE_RE.match(message)
+    code = header_code if header_code and header_code.isdigit() else matched.group(1) if matched else None
+
+    return ChServerError(
+        message,
+        status=response.status,
+        code=int(code) if code else None,
+        query_id=response.headers.get(_QUERY_ID_HEADER),
+        exception_tag=response.headers.get(_EXCEPTION_TAG_HEADER),
+    )
 
 
 def _exception_sentinel(tag: str) -> bytes:
@@ -36,21 +66,33 @@ class HttpClient:
     def __init__(self, session: ClientSession):
         self._session = session
 
+    @asynccontextmanager
+    async def _request(
+        self,
+        method: str,
+        url: str,
+        params: Mapping[str, str],
+        data: Any = None,
+    ) -> AsyncGenerator[ClientResponse, None]:
+        """Single place where a request is sent, transport errors are named and the status checked."""
+        with _transport_boundary():
+            async with self._session.request(method, url, params=params, data=data) as response:
+                await _check_response(response)
+                yield response
+
     async def get(self, url: str, params: Mapping[str, str]):
-        async with self._session.get(url, params=params) as response:
-            await _check_response(response)
+        async with self._request("GET", url, params):
+            pass
 
     async def post(self, url: str, params: Mapping[str, str], *, data: Any = None):
-        async with self._session.post(url, params=params, data=data) as response:
-            await _check_response(response)
+        async with self._request("POST", url, params, data) as response:
             # The body is discarded, but it still has to be walked: that is where a query failing
             # mid-response reports the error.
             async for _ in _read_chunks(response):
                 pass
 
     async def read(self, url: str, params: Mapping[str, str], *, data: Any = None) -> tuple[bytes, str | None]:
-        async with self._session.post(url, params=params, data=data) as response:
-            await _check_response(response)
+        async with self._request("POST", url, params, data) as response:
             payload = _raise_for_body_exception(await response.read(), response)
             return payload, response.headers.get(_TIMEZONE_HEADER)
 
@@ -62,12 +104,12 @@ class HttpClient:
         *,
         data: Any = None,
     ) -> AsyncGenerator[tuple[str | None, AsyncIterator[bytes]], None]:
-        async with self._session.post(url, params=params, data=data) as response:
-            await _check_response(response)
+        async with self._request("POST", url, params, data) as response:
             yield response.headers.get(_TIMEZONE_HEADER), _read_chunks(response)
 
     async def close(self):
-        await self._session.close()
+        with _transport_boundary():
+            await self._session.close()
 
 
 def _raise_for_body_exception(payload: bytes, response: ClientResponse) -> bytes:
@@ -82,11 +124,17 @@ def _raise_for_body_exception(payload: bytes, response: ClientResponse) -> bytes
     if index == -1:
         return payload
 
-    raise ChClientError(_exception_message(payload[index + len(sentinel) :]))
+    raise _server_error(_exception_message(payload[index + len(sentinel) :]), response)
 
 
 async def _read_chunks(response: ClientResponse) -> AsyncIterator[bytes]:
     """Yield body chunks, cutting the stream short if an exception block shows up in it."""
+    with _transport_boundary():
+        async for chunk in _scan_chunks(response):
+            yield chunk
+
+
+async def _scan_chunks(response: ClientResponse) -> AsyncIterator[bytes]:
     tag = response.headers.get(_EXCEPTION_TAG_HEADER)
     if not tag:
         async for chunk in response.content.iter_chunked(_CHUNK_SIZE):
@@ -106,7 +154,8 @@ async def _read_chunks(response: ClientResponse) -> AsyncIterator[bytes]:
             if index:
                 yield buffer[:index]
 
-            raise ChClientError(_exception_message(buffer[index + len(sentinel) :] + await response.content.read()))
+            block = buffer[index + len(sentinel) :] + await response.content.read()
+            raise _server_error(_exception_message(block), response)
 
         # A sentinel can straddle a chunk boundary, so a tail that could still start one is held
         # back instead of going to the parser. Most chunks end on bytes that cannot, and are
@@ -144,4 +193,4 @@ def _error_text(payload: bytes, tag: str | None) -> str:
 async def _check_response(response: ClientResponse):
     """Check HTTP response status and raise error if not OK."""
     if response.status != HTTPStatus.OK:
-        raise ChClientError(_error_text(await response.read(), response.headers.get(_EXCEPTION_TAG_HEADER)))
+        raise _server_error(_error_text(await response.read(), response.headers.get(_EXCEPTION_TAG_HEADER)), response)

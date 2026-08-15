@@ -332,6 +332,9 @@ print(row["doc"])  # Output: {"a": 1, "b": [True, None, {"c": "x"}]}
 
 ### Error Handling
 
+Transport, server and decoding failures all derive from `ChClientError`, so one handler still
+catches them all. Invalid arguments still raise `ValueError`, as anywhere else in Python:
+
 ```python
 from aiochlite import ChClientError
 
@@ -339,6 +342,27 @@ try:
     await client.execute("SELECT * FROM non_existent_table")
 except ChClientError as e:
     print(f"Query failed: {e}")
+```
+
+Catch a subclass when different failures need different handling:
+
+| Exception | Raised when |
+| --- | --- |
+| `ChTransportError` | The request got no usable answer: refused connection, timeout, truncated response |
+| `ChServerError` | ClickHouse reported an error, in the status or inside a `200 OK` body |
+| `ChProtocolError` | The response arrived but could not be decoded in the requested format |
+
+`ChServerError` carries `status`, `code`, `query_id` and `exception_tag`:
+
+```python
+from aiochlite import ChServerError, ChTransportError
+
+try:
+    await client.fetch("SELECT * FROM users")
+except ChTransportError:
+    ...  # retry only if the operation is idempotent: the server may have run it anyway
+except ChServerError as e:
+    log.error("query %s failed with code %s: %s", e.query_id, e.code, e)
 ```
 
 ### Custom Session
