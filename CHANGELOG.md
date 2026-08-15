@@ -10,6 +10,9 @@
 - A timezone the runtime could not load was ignored, and `DateTime` / `DateTime64` values then
   decoded in the machine's local timezone and came back naive — hours off, with nothing to show
   for it. **Such a column now raises `ChProtocolError` instead of returning a wrong value.**
+- A response without the `X-ClickHouse-Timezone` header left a `DateTime` column with no wall
+  clock to go by, and it decoded in the machine's local timezone. **That now raises
+  `ChProtocolError` too**; a column carrying its own timezone is unaffected.
 - `fetchone()` and `fetchval()` held the connection until the garbage collector reached the
   generator behind them, which on a large result meant well after the call returned.
 - `async with AsyncChClient(...)` leaked the session when the opening ping was canceled rather

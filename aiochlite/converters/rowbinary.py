@@ -8,6 +8,7 @@ from decimal import Decimal
 from functools import lru_cache
 from typing import Any, Callable, Iterable, Literal, Protocol, overload
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from aiochlite.exceptions import ChProtocolError
 
@@ -206,12 +207,23 @@ _EPOCH_DATE = date(1970, 1, 1)
 _VALUE_CACHE_SIZE = 4096
 
 
+def _server_timezone(ch_type: str, server_tz: str | None) -> ZoneInfo:
+    """The wall clock of a column without its own timezone is only knowable from the server's."""
+    tz = parse_timezone(server_tz)
+    if tz is None:
+        raise ChProtocolError(
+            f"{ch_type} has no timezone of its own and the response carried no X-ClickHouse-Timezone header."
+        )
+
+    return tz
+
+
 def _datetime_converter(ch_type: str, server_tz: str | None) -> Callable[[int], datetime]:
     """Unix timestamp -> datetime."""
     explicit_tz = extract_timezone(ch_type)
     # An explicit timezone yields an aware datetime; otherwise the wall-clock time is computed
     # in the server timezone and returned naive.
-    tz = explicit_tz or parse_timezone(server_tz)
+    tz = explicit_tz or _server_timezone(ch_type, server_tz)
     strip_tz = explicit_tz is None
 
     @lru_cache(maxsize=_VALUE_CACHE_SIZE)
@@ -271,7 +283,7 @@ def _datetime64_converter(ch_type: str, server_tz: str | None) -> Callable[[int]
     explicit_tz = extract_timezone(ch_type)
     # An explicit timezone yields an aware datetime; otherwise the wall-clock time is computed
     # in the server timezone and returned naive.
-    tz = explicit_tz or parse_timezone(server_tz)
+    tz = explicit_tz or _server_timezone(ch_type, server_tz)
     strip_tz = explicit_tz is None
 
     if scale <= 6:

@@ -192,6 +192,32 @@ def test_parse_rowbinary_datetime_server_timezone_fallback():
     assert parsed[0][3][0].tzinfo is None
 
 
+def test_datetime_without_any_timezone_is_a_protocol_error():
+    """Nothing states the wall clock here, and guessing the machine's is how the value goes wrong."""
+    parts = [
+        _encode_varuint(1),
+        _encode_string("dt"),
+        _encode_string("DateTime"),
+        (1_734_170_400).to_bytes(4, "little"),
+    ]
+
+    with pytest.raises(ChProtocolError, match="X-ClickHouse-Timezone"):
+        list(parse_rowbinary_with_names_and_types(b"".join(parts), None)[2])
+
+
+def test_column_timezone_stands_in_for_a_missing_header():
+    parts = [
+        _encode_varuint(1),
+        _encode_string("dt"),
+        _encode_string("DateTime('UTC')"),
+        (1_734_170_400).to_bytes(4, "little"),
+    ]
+
+    _, _, rows = parse_rowbinary_with_names_and_types(b"".join(parts), None)
+
+    assert next(iter(rows))[0] == datetime(2024, 12, 14, 10, 0, tzinfo=ZoneInfo("UTC"))
+
+
 def test_unloadable_server_timezone_only_matters_for_datetime():
     """A timezone the runtime cannot load must not quietly become the local one."""
     parts = [

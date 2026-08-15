@@ -281,6 +281,9 @@ class AsyncChClient:
     async def stream(self, query: str, **kwargs: Unpack[QueryOptions]) -> AsyncGenerator[Row, None]:
         """Execute query and iterate over results.
 
+        Leaving the loop early keeps the response open until the generator is closed;
+        `contextlib.aclosing` does that on the spot.
+
         Yields:
             Row: Query result rows.
 
@@ -294,6 +297,9 @@ class AsyncChClient:
 
     async def stream_rows(self, query: str, **kwargs: Unpack[QueryOptions]) -> AsyncGenerator[tuple[Any, ...], None]:
         """Execute query and iterate over results as raw tuples (no `Row` wrapper).
+
+        Leaving the loop early keeps the response open until the generator is closed;
+        `contextlib.aclosing` does that on the spot.
 
         Yields:
             tuple: Query result rows.
@@ -395,6 +401,9 @@ class AsyncChClient:
         Args:
             query (str): Query without a FORMAT clause.
             format_name (ExportFormat): ClickHouse output format, e.g. `"Parquet"`, `"CSVWithNames"`, `"JSONEachRow"`.
+
+        Leaving the loop early keeps the response open until the generator is closed;
+        `contextlib.aclosing` does that on the spot.
 
         Yields:
             bytes: Undecoded payload chunks as returned by the server.
