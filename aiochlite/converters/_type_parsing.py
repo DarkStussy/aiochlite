@@ -3,6 +3,8 @@ from functools import lru_cache
 from typing import Final
 from zoneinfo import ZoneInfo
 
+from aiochlite.exceptions import ChProtocolError
+
 _DATETIME_TZ_RE: Final[re.Pattern[str]] = re.compile(
     r"DateTime(?:64)?\(\s*(?:\d+\s*,\s*)?'([^']+)'\s*\)",
     re.IGNORECASE,
@@ -89,8 +91,9 @@ def parse_timezone(name: str | None) -> ZoneInfo | None:
 
     try:
         return ZoneInfo(name)
-    except Exception:
-        return None
+    except Exception as error:
+        # Falling back to None would decode DateTime in the local timezone and return it naive.
+        raise ChProtocolError(f"Cannot load timezone {name!r}. Install `tzdata` if the system has none.") from error
 
 
 @lru_cache(maxsize=256)

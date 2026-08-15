@@ -34,7 +34,7 @@
 
 ## Features
 
-- **Lightweight** - minimal dependencies, only aiohttp required
+- **Lightweight** - only aiohttp required, plus `tzdata` on Windows
 - **Streaming support** - efficient processing of large datasets with `.stream()`
 - **Export formats** - raw Parquet / CSV / TSV / JSON / Arrow / ORC payloads via `.fetch_format()` and `.stream_format()`
 - **External tables** - advanced temporary data support
@@ -47,7 +47,8 @@
 A small, pure-Python async client for ClickHouse over HTTP. Results are decoded from
 `RowBinaryWithNamesAndTypes` into either `Row` wrappers (`fetch()`) or raw tuples (`fetch_rows()`).
 
-- **One dependency**: `aiohttp`. aiochlite itself ships no compiled extensions.
+- **One dependency**: `aiohttp`, joined by `tzdata` on Windows, which ships no timezone
+  database of its own. aiochlite itself ships no compiled extensions.
 - **Server-side query parameters**: values are sent as ClickHouse `param_*` and never interpolated into the query text.
 - **Fast for pure Python**: in the [benchmark below](#benchmarks), `fetch_rows()` spends 24% less time than `aiochclient` and `fetch()` 16% less, against a client with C-accelerated parsing.
 - **Typed**: complete type hints for IDEs and static type checkers.

@@ -7,7 +7,8 @@ readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.12"
 dependencies = [
-    "aiohttp>=3.13,<4"
+    "aiohttp>=3.13,<4",
+    "tzdata; platform_system == 'Windows'"
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -23,7 +24,7 @@ classifiers = [
 
 [project.optional-dependencies]
 aiohttp-speedups = [
-    "aiohttp[speedups]>=3.13,<3.15",
+    "aiohttp[speedups]>=3.13,<4",
 ]
 
 [project.urls]

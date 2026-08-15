@@ -13,6 +13,7 @@ from aiochlite.converters.rowbinary import (
     parse_rowbinary_with_names_and_types,
     parse_rowbinary_with_names_and_types_lazy,
 )
+from aiochlite.exceptions import ChProtocolError
 
 
 def _encode_varuint(value: int) -> bytes:
@@ -151,7 +152,8 @@ def test_parse_rowbinary_datetime64_array_uuid():
 
 
 def test_parse_rowbinary_datetime_server_timezone_fallback():
-    server_tz = ZoneInfo("Europe/Moscow")
+    # The parser receives the timezone name exactly as the server header carries it.
+    server_tz = "Europe/Moscow"
     ts = int(datetime(2025, 12, 14, 10, 0, 0, tzinfo=ZoneInfo("UTC")).timestamp())
     epoch_ms = ts * 1000
     parts = [
@@ -188,6 +190,29 @@ def test_parse_rowbinary_datetime_server_timezone_fallback():
     assert parsed[0][2].tzinfo == ZoneInfo("UTC")
     assert parsed[0][3] == [expected_naive]
     assert parsed[0][3][0].tzinfo is None
+
+
+def test_unloadable_server_timezone_only_matters_for_datetime():
+    """A timezone the runtime cannot load must not quietly become the local one."""
+    parts = [
+        _encode_varuint(1),
+        _encode_string("n"),
+        _encode_string("UInt8"),
+        (7).to_bytes(1, "little"),
+    ]
+
+    _, _, rows = parse_rowbinary_with_names_and_types(b"".join(parts), "Not/AZone")
+    assert next(iter(rows))[0] == 7
+
+    parts = [
+        _encode_varuint(1),
+        _encode_string("dt"),
+        _encode_string("DateTime"),
+        (1_734_170_400).to_bytes(4, "little"),
+    ]
+
+    with pytest.raises(ChProtocolError, match="Not/AZone"):
+        list(parse_rowbinary_with_names_and_types(b"".join(parts), "Not/AZone")[2])
 
 
 def test_parse_rowbinary_datetime64_below_a_microsecond():

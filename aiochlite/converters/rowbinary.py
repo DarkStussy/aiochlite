@@ -8,11 +8,10 @@ from decimal import Decimal
 from functools import lru_cache
 from typing import Any, Callable, Iterable, Literal, Protocol, overload
 from uuid import UUID
-from zoneinfo import ZoneInfo
 
 from aiochlite.exceptions import ChProtocolError
 
-from ._type_parsing import extract_base_type, extract_timezone, split_type_arguments, unwrap_wrappers
+from ._type_parsing import extract_base_type, extract_timezone, parse_timezone, split_type_arguments, unwrap_wrappers
 
 
 class _Reader(Protocol):
@@ -207,12 +206,12 @@ _EPOCH_DATE = date(1970, 1, 1)
 _VALUE_CACHE_SIZE = 4096
 
 
-def _datetime_converter(ch_type: str, server_tz: ZoneInfo | None) -> Callable[[int], datetime]:
+def _datetime_converter(ch_type: str, server_tz: str | None) -> Callable[[int], datetime]:
     """Unix timestamp -> datetime."""
     explicit_tz = extract_timezone(ch_type)
     # An explicit timezone yields an aware datetime; otherwise the wall-clock time is computed
     # in the server timezone and returned naive.
-    tz = explicit_tz or server_tz
+    tz = explicit_tz or parse_timezone(server_tz)
     strip_tz = explicit_tz is None
 
     @lru_cache(maxsize=_VALUE_CACHE_SIZE)
@@ -223,7 +222,7 @@ def _datetime_converter(ch_type: str, server_tz: ZoneInfo | None) -> Callable[[i
     return _convert
 
 
-def _datetime_reader(ch_type: str, server_tz: ZoneInfo | None) -> Callable[[_Reader], datetime]:
+def _datetime_reader(ch_type: str, server_tz: str | None) -> Callable[[_Reader], datetime]:
     _dt = _datetime_converter(ch_type, server_tz)
 
     def _read_dt(reader: _Reader) -> datetime:
@@ -264,7 +263,7 @@ def _time64_reader(ch_type: str) -> Callable[[_Reader], timedelta]:
     return _read_time64
 
 
-def _datetime64_converter(ch_type: str, server_tz: ZoneInfo | None) -> Callable[[int], datetime]:
+def _datetime64_converter(ch_type: str, server_tz: str | None) -> Callable[[int], datetime]:
     """Raw ticks -> datetime."""
     inner = ch_type[ch_type.index("(") + 1 : ch_type.rindex(")")]
     parts = [p.strip() for p in inner.split(",")]
@@ -272,7 +271,7 @@ def _datetime64_converter(ch_type: str, server_tz: ZoneInfo | None) -> Callable[
     explicit_tz = extract_timezone(ch_type)
     # An explicit timezone yields an aware datetime; otherwise the wall-clock time is computed
     # in the server timezone and returned naive.
-    tz = explicit_tz or server_tz
+    tz = explicit_tz or parse_timezone(server_tz)
     strip_tz = explicit_tz is None
 
     if scale <= 6:
@@ -298,7 +297,7 @@ def _datetime64_converter(ch_type: str, server_tz: ZoneInfo | None) -> Callable[
     return _convert
 
 
-def _datetime64_reader(ch_type: str, server_tz: ZoneInfo | None) -> Callable[[_Reader], datetime]:
+def _datetime64_reader(ch_type: str, server_tz: str | None) -> Callable[[_Reader], datetime]:
     _dt64 = _datetime64_converter(ch_type, server_tz)
 
     def _read_dt64(reader: _Reader) -> datetime:
@@ -401,7 +400,7 @@ def _ipv6_reader(_: str) -> Callable[[_Reader], ipaddress.IPv6Address]:
     return _read_ipv6
 
 
-def _array_reader(ch_type: str, server_tz: ZoneInfo | None) -> Callable[[_Reader], list[Any]]:
+def _array_reader(ch_type: str, server_tz: str | None) -> Callable[[_Reader], list[Any]]:
     inner_type = ch_type[6:-1]
     inner = _reader_for_type(inner_type, server_tz)
 
@@ -411,7 +410,7 @@ def _array_reader(ch_type: str, server_tz: ZoneInfo | None) -> Callable[[_Reader
     return _read_array
 
 
-def _map_reader(ch_type: str, server_tz: ZoneInfo | None) -> Callable[[_Reader], dict[Any, Any]]:
+def _map_reader(ch_type: str, server_tz: str | None) -> Callable[[_Reader], dict[Any, Any]]:
     inner = ch_type[ch_type.index("(") + 1 : ch_type.rindex(")")]
     key_type, value_type = split_type_arguments(inner)
     key_reader = _reader_for_type(key_type, server_tz)
@@ -429,7 +428,7 @@ def _map_reader(ch_type: str, server_tz: ZoneInfo | None) -> Callable[[_Reader],
     return _read_map
 
 
-def _tuple_reader(ch_type: str, server_tz: ZoneInfo | None) -> Callable[[_Reader], tuple[Any, ...]]:
+def _tuple_reader(ch_type: str, server_tz: str | None) -> Callable[[_Reader], tuple[Any, ...]]:
     inner = ch_type[6:-1]
     element_types = split_type_arguments(inner)
     readers = tuple(_reader_for_type(t, server_tz) for t in element_types)
@@ -493,7 +492,7 @@ _COMPLEX_READERS: dict[str, Callable[[str], Callable[[_Reader], Any]]] = {
     "UUID": lambda _: _uuid_reader,
 }
 
-_TZ_AWARE_READERS: dict[str, Callable[[str, ZoneInfo | None], Callable[[_Reader], Any]]] = {
+_TZ_AWARE_READERS: dict[str, Callable[[str, str | None], Callable[[_Reader], Any]]] = {
     "Array": _array_reader,
     "DateTime": _datetime_reader,
     "DateTime64": _datetime64_reader,
@@ -503,7 +502,7 @@ _TZ_AWARE_READERS: dict[str, Callable[[str, ZoneInfo | None], Callable[[_Reader]
 
 
 @lru_cache(maxsize=256)
-def _reader_for_type(ch_type: str, server_tz: ZoneInfo | None = None) -> Callable[[_Reader], Any]:
+def _reader_for_type(ch_type: str, server_tz: str | None = None) -> Callable[[_Reader], Any]:
     if ch_type.startswith("LowCardinality("):
         return _reader_for_type(ch_type[15:-1], server_tz)
 
@@ -569,7 +568,7 @@ def _seconds_to_timedelta(seconds: int) -> timedelta:
 
 # Fixed-width types whose raw scalar still needs converting. Each entry returns the struct
 # format code plus the converter.
-_FIXED_CONVERTERS: dict[str, Callable[[str, ZoneInfo | None], tuple[str, Callable[[Any], Any]]]] = {
+_FIXED_CONVERTERS: dict[str, Callable[[str, str | None], tuple[str, Callable[[Any], Any]]]] = {
     "Date": lambda _ch_type, _tz: ("H", _days_to_date),
     "Date32": lambda _ch_type, _tz: ("i", _days_to_date),
     "DateTime": lambda ch_type, tz: ("I", _datetime_converter(ch_type, tz)),
@@ -582,7 +581,7 @@ _FIXED_CONVERTERS: dict[str, Callable[[str, ZoneInfo | None], tuple[str, Callabl
 }
 
 
-def _fixed_field(ch_type: str, server_tz: ZoneInfo | None) -> tuple[str, Callable[[Any], Any] | None] | None:
+def _fixed_field(ch_type: str, server_tz: str | None) -> tuple[str, Callable[[Any], Any] | None] | None:
     """Struct format code and optional converter, or None if the column is not fixed-width."""
     # A Nullable value is prefixed with a null flag, so its width varies from row to row.
     if "Nullable(" in ch_type:
@@ -674,7 +673,7 @@ def _fixed_runs(fields: list[tuple[str, Callable[[Any], Any] | None] | None]) ->
     return runs
 
 
-def _make_row_reader(types: list[str], server_tz: ZoneInfo | None) -> Callable[[_Reader], list[Any]] | None:
+def _make_row_reader(types: list[str], server_tz: str | None) -> Callable[[_Reader], list[Any]] | None:
     """Row decoder fusing each run of fixed-width columns into one struct call.
 
     Returns None when no run is long enough to be worth fusing; the caller then keeps the plain
@@ -724,19 +723,19 @@ def _make_row_reader(types: list[str], server_tz: ZoneInfo | None) -> Callable[[
 
 @overload
 def parse_rowbinary_with_names_and_types(
-    data: bytes, server_tz: ZoneInfo | None = ..., *, as_tuple: Literal[False] = ...
+    data: bytes, server_tz: str | None = ..., *, as_tuple: Literal[False] = ...
 ) -> tuple[list[str], list[str], Iterable[list[Any]]]: ...
 
 
 @overload
 def parse_rowbinary_with_names_and_types(
-    data: bytes, server_tz: ZoneInfo | None = ..., *, as_tuple: Literal[True]
+    data: bytes, server_tz: str | None = ..., *, as_tuple: Literal[True]
 ) -> tuple[list[str], list[str], Iterable[tuple[Any, ...]]]: ...
 
 
 def parse_rowbinary_with_names_and_types(
     data: bytes,
-    server_tz: ZoneInfo | None = None,
+    server_tz: str | None = None,
     *,
     as_tuple: bool = False,
 ) -> tuple[list[str], list[str], Iterable[Any]]:
@@ -745,7 +744,7 @@ def parse_rowbinary_with_names_and_types(
 
     Args:
         data (bytes): RowBinaryWithNamesAndTypes payload.
-        server_tz (ZoneInfo | None): Fallback timezone for ``DateTime``/``DateTime64`` columns
+        server_tz (str | None): Fallback timezone name for ``DateTime``/``DateTime64`` columns
             that carry no explicit timezone (the ClickHouse server timezone).
         as_tuple (bool): Yield tuples instead of lists, avoiding a second pass over every row.
 
@@ -1041,14 +1040,14 @@ class RowBinaryLazyValues(Sequence[Any]):
 
 def parse_rowbinary_with_names_and_types_lazy(
     data: bytes,
-    server_tz: ZoneInfo | None = None,
+    server_tz: str | None = None,
 ) -> tuple[list[str], list[str], Iterable[RowBinaryLazyValues]]:
     """
     Parse RowBinaryWithNamesAndTypes payload and return rows with lazy per-cell decoding.
 
     Args:
         data (bytes): RowBinaryWithNamesAndTypes payload.
-        server_tz (ZoneInfo | None): Fallback timezone for ``DateTime``/``DateTime64`` columns
+        server_tz (str | None): Fallback timezone name for ``DateTime``/``DateTime64`` columns
             that carry no explicit timezone (the ClickHouse server timezone).
     """
     reader = _BinaryReader(data)
@@ -1247,7 +1246,7 @@ class _StreamingReader:
 
 
 class RowBinaryWithNamesAndTypesStreamParser:
-    def __init__(self, chunks: AsyncIterator[bytes], *, lazy: bool = False, server_tz: ZoneInfo | None = None):
+    def __init__(self, chunks: AsyncIterator[bytes], *, lazy: bool = False, server_tz: str | None = None):
         self._chunks = chunks.__aiter__()
         self._reader = _StreamingReader()
         self._done = False

@@ -7,7 +7,6 @@ from typing import Any, Generator, Literal, Mapping, Self, Sequence, TypedDict, 
 from aiohttp import ClientSession, FormData, TCPConnector
 
 from .converters import quote_identifier
-from .converters._type_parsing import parse_timezone
 from .converters.rowbinary import (
     RowBinaryWithNamesAndTypesStreamParser,
     parse_rowbinary_with_names_and_types,
@@ -247,7 +246,7 @@ class AsyncChClient:
             parser = RowBinaryWithNamesAndTypesStreamParser(
                 byte_chunks,
                 lazy=self._lazy_decode,
-                server_tz=parse_timezone(tz),
+                server_tz=tz,
             )
             with _decoding():
                 names, _ = await parser.read_header()
@@ -258,7 +257,7 @@ class AsyncChClient:
 
     async def _fetch(self, params: dict[str, Any], data: str | FormData) -> list[Row]:
         payload, tz = await self._http_client.read(self._url, params=params, data=data)
-        server_tz = parse_timezone(tz)
+        server_tz = tz
         with _decoding():
             names, _, rows = (
                 parse_rowbinary_with_names_and_types_lazy(payload, server_tz)
@@ -302,7 +301,7 @@ class AsyncChClient:
         """
         params, data = self._prepare_query(query, **kwargs)
         async with self._http_client.stream(self._url, params=params, data=data) as (tz, byte_chunks):
-            parser = RowBinaryWithNamesAndTypesStreamParser(byte_chunks, lazy=False, server_tz=parse_timezone(tz))
+            parser = RowBinaryWithNamesAndTypesStreamParser(byte_chunks, lazy=False, server_tz=tz)
             with _decoding():
                 await parser.read_header()
 
@@ -333,7 +332,7 @@ class AsyncChClient:
         params, data = self._prepare_query(query, **kwargs)
         payload, tz = await self._http_client.read(self._url, params=params, data=data)
         with _decoding():
-            _, _, rows = parse_rowbinary_with_names_and_types(payload, parse_timezone(tz), as_tuple=True)
+            _, _, rows = parse_rowbinary_with_names_and_types(payload, tz, as_tuple=True)
             return list(rows)
 
     async def fetchone(self, query: str, **kwargs: Unpack[QueryOptions]) -> Row | None:
