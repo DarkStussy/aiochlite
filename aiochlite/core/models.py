@@ -26,7 +26,7 @@ class ExternalData(NamedTuple):
 
 
 class Row(Mapping[str, Any]):
-    """Query result row with column access by name or index."""
+    """Query result row, keyed by column name. `fetch_rows()` returns tuples for positional access."""
 
     __slots__ = ("_dict", "_index", "_names", "_values")
 
