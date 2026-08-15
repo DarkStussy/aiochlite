@@ -143,7 +143,7 @@ Environment variables are the same as above, plus `BENCH_SWEEP_ROWS` (default: `
 Measured 2026-08-15.
 
 ```
-aiochlite 1.6.0 @ f14512b
+aiochlite 1.6.0 @ 56c02a8
 CPU: AMD Ryzen 7 9800X3D 8-Core Processor
 OS: Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39
 Python: 3.14.5 (CPython)
@@ -223,7 +223,7 @@ Run:
 Measured 2026-08-15.
 
 ```
-aiochlite 1.6.0 @ f14512b
+aiochlite 1.6.0 @ 56c02a8
 CPU: AMD Ryzen 7 9800X3D 8-Core Processor
 OS: Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39
 Python: 3.14.5 (CPython)
