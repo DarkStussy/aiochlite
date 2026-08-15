@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from aiochlite import AsyncChClient
+from aiochlite.converters import quote_identifier
 from aiochlite.core import ExternalTable
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.clickhouse]
@@ -143,3 +144,16 @@ async def test_external_table_datetime_precision(ch_client: AsyncChClient):
     assert row is not None
     assert row["n"].replace(tzinfo=None) == naive
     assert row["a"].replace(tzinfo=None) == naive
+
+
+async def test_external_table_columns_needing_quotes(ch_client: AsyncChClient):
+    """Names an insert already handles must work here too, backquote and all."""
+    column = "odd col`name"
+    ext = ExternalTable(structure=((column, "UInt32"), ("s", "String")), data=((1, "a"), (2, "b")))
+
+    value = await ch_client.fetchval(
+        f"SELECT sum({quote_identifier(column)}) FROM ext WHERE s = 'b'",
+        external_tables={"ext": ext},
+    )
+
+    assert value == 2

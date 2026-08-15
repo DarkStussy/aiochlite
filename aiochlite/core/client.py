@@ -1,7 +1,7 @@
 from collections.abc import Mapping
 from typing import Any, TypedDict, Unpack
 
-from aiochlite.converters import to_clickhouse
+from aiochlite.converters import quote_identifier, to_clickhouse
 
 from .models import ExternalTable
 
@@ -66,7 +66,7 @@ class ChClientCore:
             for name, external_table in external_tables.items():
                 url_params[f"{name}_format"] = "JSONCompactEachRow"
                 url_params[f"{name}_structure"] = ", ".join(
-                    f"{column} {column_type}" for column, column_type in external_table.structure
+                    f"{quote_identifier(column)} {column_type}" for column, column_type in external_table.structure
                 )
 
         return url_params
