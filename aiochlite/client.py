@@ -6,14 +6,24 @@ from typing import Any, Generator, Literal, Mapping, Self, Sequence, TypedDict, 
 
 from aiohttp import ClientSession, FormData, TCPConnector
 
-from .converters import quote_identifier, to_json
+from .converters import quote_identifier
 from .converters._type_parsing import parse_timezone
 from .converters.rowbinary import (
     RowBinaryWithNamesAndTypesStreamParser,
     parse_rowbinary_with_names_and_types,
     parse_rowbinary_with_names_and_types_lazy,
 )
-from .core import ChClientCore, ClientCoreOptions, ExternalTable, Row, build_external_data, build_insert_body
+from .core import (
+    ChClientCore,
+    ClientCoreOptions,
+    ExternalTable,
+    InsertData,
+    Row,
+    build_external_data,
+    build_insert_body,
+    serialize_rows,
+    take_first_row,
+)
 from .exceptions import ChClientError, ChProtocolError
 from .http_client import HttpClient
 
@@ -428,7 +438,7 @@ class AsyncChClient:
     async def insert(
         self,
         table: str,
-        data: Sequence[dict[str, Any]] | list[tuple[Any, ...]],
+        data: InsertData,
         *,
         database: str | None = None,
         column_names: Sequence[str] | None = None,
@@ -436,9 +446,14 @@ class AsyncChClient:
     ):
         """Insert data into a ClickHouse table.
 
+        Rows are serialized and sent as the request goes out, so an iterator or async iterator
+        can be inserted without holding all of it in memory. An exception from the source
+        propagates unchanged, leaving the rows sent before it inserted.
+
         Args:
             table (str): Table name.
-            data (Sequence[dict[str, Any]] | list[tuple[Any, ...]]): Rows to insert.
+            data (InsertData): Rows to insert, as dicts or tuples; the first row decides how the
+                rest are read.
             database (str | None): Database name (uses default if None).
             column_names (Sequence[str] | None): Column names for tuple data.
             settings (Mapping[str, Any] | None): ClickHouse settings.
@@ -446,15 +461,11 @@ class AsyncChClient:
         Raises:
             ChClientError: If insertion fails.
         """
-        if not data:
+        taken = await take_first_row(data)
+        if taken is None:
             return
 
-        if isinstance(data[0], dict):
-            format_name = "JSONEachRow"
-            rows = (to_json(row) for row in data)
-        else:
-            format_name = "JSONCompactEachRow"
-            rows = (to_json(list(row)) for row in data)
+        format_name, rows = serialize_rows(*taken)
 
         columns_clause = f" ({', '.join(quote_identifier(name) for name in column_names)})" if column_names else ""
         statement = f"INSERT INTO {{_db:Identifier}}.{{_table:Identifier}}{columns_clause} FORMAT {format_name}\n"

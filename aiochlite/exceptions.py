@@ -2,6 +2,21 @@ class ChClientError(Exception):
     """ClickHouse query execution error."""
 
 
+class _SourceError(Exception):
+    """
+    Carries an exception raised by a user-supplied row source.
+
+    aiohttp turns anything raised while sending the body into a connection error, which would
+    report a failed insert as a network problem. The transport boundary unwraps this instead.
+    """
+
+    __slots__ = ("cause",)
+
+    def __init__(self, cause: BaseException):
+        super().__init__(str(cause))
+        self.cause = cause
+
+
 class ChTransportError(ChClientError):
     """The request never got a usable answer: connection refused, timeout, truncated response."""
 

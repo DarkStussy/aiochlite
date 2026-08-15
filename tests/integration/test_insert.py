@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import ipaddress
+from collections.abc import AsyncIterator, Iterator
 from datetime import date, datetime
 from decimal import Decimal
+from typing import Any
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -10,6 +12,7 @@ import pytest
 
 from aiochlite import AsyncChClient, ChServerError
 from aiochlite.converters import quote_identifier
+from aiochlite.core.insert_data import _BATCH_BYTES
 
 from ._types import TableFactory
 
@@ -214,3 +217,97 @@ async def test_settings_cannot_redirect_the_insert(ch_client: AsyncChClient, mak
 
     assert await ch_client.fetchval(f"SELECT count() FROM {expected}") == 1
     assert await ch_client.fetchval(f"SELECT count() FROM {other}") == 0
+
+
+async def test_insert_from_generator(ch_client: AsyncChClient, make_table: TableFactory):
+    table = await make_table(id="UInt32", name="String")
+    await ch_client.insert(table, ((i, f"n{i}") for i in range(5)), column_names=("id", "name"))
+
+    assert await ch_client.fetchval(f"SELECT count() FROM {table}") == 5
+
+
+async def test_insert_from_async_generator(ch_client: AsyncChClient, make_table: TableFactory):
+    async def rows() -> AsyncIterator[tuple[int, str]]:
+        for i in range(5):
+            yield i, f"n{i}"
+
+    table = await make_table(id="UInt32", name="String")
+    await ch_client.insert(table, rows(), column_names=("id", "name"))
+
+    assert await ch_client.fetchval(f"SELECT count() FROM {table}") == 5
+
+
+async def test_insert_from_async_generator_of_dicts(ch_client: AsyncChClient, make_table: TableFactory):
+    """The first row picks the format, whichever kind of source it came from."""
+
+    async def rows() -> AsyncIterator[dict[str, Any]]:
+        for i in range(5):
+            yield {"id": i, "name": f"n{i}"}
+
+    table = await make_table(id="UInt32", name="String")
+    await ch_client.insert(table, rows())
+
+    assert await ch_client.fetchval(f"SELECT count() FROM {table}") == 5
+
+
+@pytest.mark.parametrize("empty", [[], (), iter(())], ids=["list", "tuple", "iterator"])
+async def test_insert_of_nothing_sends_no_request(ch_client: AsyncChClient, make_table: TableFactory, empty: Any):
+    table = await make_table(id="UInt32")
+    await ch_client.insert(table, empty, column_names=("id",))
+
+    assert await ch_client.fetchval(f"SELECT count() FROM {table}") == 0
+
+
+async def test_insert_of_nothing_from_async_source(ch_client: AsyncChClient, make_table: TableFactory):
+    async def rows() -> AsyncIterator[tuple[int]]:
+        return
+        yield  # pragma: no cover
+
+    table = await make_table(id="UInt32")
+    await ch_client.insert(table, rows(), column_names=("id",))
+
+    assert await ch_client.fetchval(f"SELECT count() FROM {table}") == 0
+
+
+async def test_insert_from_generator_spanning_batches(ch_client: AsyncChClient, make_table: TableFactory):
+    """Rows wide enough to fill several batches must all arrive, in order."""
+
+    def rows() -> Iterator[tuple[int, str]]:
+        for i in range(3):
+            yield i, "x" * (_BATCH_BYTES // 2)
+
+    table = await make_table(id="UInt32", name="String")
+    await ch_client.insert(table, rows(), column_names=("id", "name"))
+
+    assert await ch_client.fetchval(f"SELECT count() FROM {table}") == 3
+    assert await ch_client.fetch_rows(f"SELECT id FROM {table} ORDER BY id") == [(0,), (1,), (2,)]
+
+
+async def test_source_error_is_not_reported_as_a_transport_failure(ch_client: AsyncChClient, make_table: TableFactory):
+    """aiohttp turns anything raised while sending into a connection error; the caller wants theirs."""
+
+    class SourceError(Exception):
+        pass
+
+    def rows() -> Iterator[tuple[int, str]]:
+        yield 1, "ok"
+        raise SourceError("source failed")
+
+    table = await make_table(id="UInt32", name="String")
+    with pytest.raises(SourceError, match="source failed"):
+        await ch_client.insert(table, rows(), column_names=("id", "name"))
+
+
+async def test_async_source_error_is_not_reported_as_a_transport_failure(
+    ch_client: AsyncChClient, make_table: TableFactory
+):
+    class SourceError(Exception):
+        pass
+
+    async def rows() -> AsyncIterator[tuple[int, str]]:
+        yield 1, "ok"
+        raise SourceError("source failed")
+
+    table = await make_table(id="UInt32", name="String")
+    with pytest.raises(SourceError, match="source failed"):
+        await ch_client.insert(table, rows(), column_names=("id", "name"))

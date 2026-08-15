@@ -137,6 +137,19 @@ await client.insert(
 )
 ```
 
+Rows are serialized and sent as the request goes out, so any iterable or async iterable works —
+including one that never holds the whole dataset:
+
+```python
+async def rows_from(source):
+    async for record in source:
+        yield {"id": record.id, "name": record.name}
+
+await client.insert("users", rows_from(source))
+```
+
+The first row decides whether the batch is read as dicts or as tuples.
+
 ### Fetch Results
 
 ```python

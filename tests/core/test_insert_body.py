@@ -1,6 +1,8 @@
+from collections.abc import AsyncIterable, AsyncIterator, Iterable, Iterator
+
 import pytest
 
-from aiochlite.core.insert_data import _BATCH_BYTES, build_insert_body
+from aiochlite.core.insert_data import _BATCH_BYTES, InsertData, build_insert_body, serialize_rows, take_first_row
 
 
 async def _collect(statement: str, rows: list[str]) -> list[bytes]:
@@ -71,3 +73,95 @@ async def test_batches_are_measured_in_bytes_not_characters(row: str):
 async def test_body_always_ends_with_a_newline(rows: list[str]):
     chunks = await _collect("INSERT\n", rows)
     assert b"".join(chunks).endswith(b"\n")
+
+
+async def test_take_first_row_from_sync_source():
+    taken = await take_first_row([{"a": 1}, {"a": 2}])
+    assert taken is not None
+
+    first, rest = taken
+    assert first == {"a": 1}
+    assert isinstance(rest, Iterator)
+    assert list(rest) == [{"a": 2}]
+
+
+async def test_take_first_row_from_async_source():
+    async def rows():
+        yield {"a": 1}
+        yield {"a": 2}
+
+    taken = await take_first_row(rows())
+    assert taken is not None
+
+    first, rest = taken
+    assert first == {"a": 1}
+    assert isinstance(rest, AsyncIterator)
+    assert [row async for row in rest] == [{"a": 2}]
+
+
+@pytest.mark.parametrize("empty", [[], (), iter(())], ids=["list", "tuple", "iterator"])
+async def test_take_first_row_of_nothing(empty: InsertData):
+    assert await take_first_row(empty) is None
+
+
+async def test_take_first_row_of_nothing_async():
+    async def rows():
+        return
+        yield  # pragma: no cover
+
+    assert await take_first_row(rows()) is None
+
+
+async def test_serialize_rows_puts_the_taken_row_back_first():
+    taken = await take_first_row([(1, "a"), (2, "b")])
+    assert taken is not None
+
+    format_name, rows = serialize_rows(*taken)
+    assert format_name == "JSONCompactEachRow"
+    assert isinstance(rows, Iterable)
+    assert list(rows) == ['[1,"a"]', '[2,"b"]']
+
+
+async def test_serialize_rows_picks_the_format_from_the_first_row():
+    taken = await take_first_row([{"a": 1}, {"a": 2}])
+    assert taken is not None
+
+    format_name, rows = serialize_rows(*taken)
+    assert format_name == "JSONEachRow"
+    assert isinstance(rows, Iterable)
+    assert list(rows) == ['{"a":1}', '{"a":2}']
+
+
+async def test_serialize_rows_keeps_an_async_source_async():
+    async def source():
+        yield (1, "a")
+        yield (2, "b")
+
+    taken = await take_first_row(source())
+    assert taken is not None
+
+    format_name, rows = serialize_rows(*taken)
+    assert format_name == "JSONCompactEachRow"
+    assert isinstance(rows, AsyncIterable)
+    assert [row async for row in rows] == ['[1,"a"]', '[2,"b"]']
+
+
+async def test_body_accepts_an_async_source():
+    async def rows():
+        yield '{"a":1}'
+        yield '{"a":2}'
+
+    chunks = [chunk async for chunk in build_insert_body("INSERT\n", rows())]
+    assert b"".join(chunks) == b'INSERT\n{"a":1}\n{"a":2}\n'
+
+
+async def test_async_source_is_batched_the_same_way():
+    row = "z" * (_BATCH_BYTES // 2)
+
+    async def rows():
+        for _ in range(6):
+            yield row
+
+    chunks = [chunk async for chunk in build_insert_body("INSERT\n", rows())]
+    assert len(chunks) > 2
+    assert b"".join(chunks) == b"INSERT\n" + (row.encode() + b"\n") * 6

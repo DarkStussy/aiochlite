@@ -5,7 +5,7 @@ from typing import Any, AsyncGenerator, AsyncIterator, Generator, Mapping
 
 from aiohttp import ClientError, ClientResponse, ClientSession
 
-from .exceptions import ChServerError, ChTransportError
+from .exceptions import ChServerError, ChTransportError, _SourceError
 
 _TIMEZONE_HEADER = "X-ClickHouse-Timezone"
 _EXCEPTION_TAG_HEADER = "X-ClickHouse-Exception-Tag"
@@ -22,12 +22,29 @@ _MAX_EXCEPTION_BLOCK = 16 * 1024
 _CHUNK_SIZE = 262_144
 
 
+def _source_failure(error: BaseException) -> BaseException | None:
+    """Find a row-source exception that aiohttp buried under a connection error."""
+    seen: BaseException | None = error
+    while seen is not None:
+        if isinstance(seen, _SourceError):
+            return seen.cause
+
+        seen = seen.__cause__ or seen.__context__
+
+    return None
+
+
 @contextmanager
 def _transport_boundary() -> Generator[None, None, None]:
     """Keep aiohttp exceptions out of the public API. ``CancelledError`` is not an ``Exception``."""
     try:
         yield
     except (ClientError, TimeoutError) as error:
+        # A failing row source is not a network failure, and the caller wants their own exception.
+        source = _source_failure(error)
+        if source is not None:
+            raise source from source.__cause__
+
         raise ChTransportError(str(error) or type(error).__name__) from error
 
 
