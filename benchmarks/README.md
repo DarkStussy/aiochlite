@@ -1,6 +1,10 @@
 # Benchmarks
 
-This directory contains benchmark scripts for `aiochlite`.
+This directory contains benchmark scripts for `aiochlite`:
+
+- `fetch_rows.py` — end-to-end fetch + decode, compared against other clients.
+- `decode_fusion.py` — decoding only, comparing two decoders inside `aiochlite` itself.
+- `converter_cache.py` — decoding only, measuring both sides of the value-cache trade.
 
 > [!NOTE]
 > Benchmarks always depend on machine and environment (CPU, RAM, kernel, ClickHouse version/config, network, etc).
@@ -104,3 +108,144 @@ Avg:       363.21 ms (275,324 rows/s, 3.6 µs/row)
 ```
 
 Repeat runs of the same configuration produced averages within approximately 2% of these results.
+
+## Decoder benchmark: fixed-width fusion
+
+Script: `benchmarks/decode_fusion.py`
+
+What it measures:
+- Decoding only. The payload is fetched once, before any timing starts, so neither the network nor the server
+  appears in the measurement.
+- Compares two decoders inside `aiochlite` over the same in-memory `RowBinaryWithNamesAndTypes` payload:
+  - `per-field`: one reader call per column.
+  - `fused`: runs of consecutive fixed-width columns collapsed into a single `struct` call.
+- Three representative schemas (fully fixed-width, mixed, wide numeric), then a sweep of 2 to 10 consecutive
+  `UInt64` columns that isolates run length from everything else.
+- Needs no competitor packages, so it runs against the project environment as is.
+
+Method:
+- Both decoders are checked for identical decoded output once, before any timing.
+- Rounds alternate which decoder runs first, so drift over the run is shared rather than charged to one side.
+- Each decoded result is released before the next measurement starts, so only one result is ever live.
+- Medians are reported next to the raw series; a mean would hide how noisy these numbers are.
+
+Run:
+
+```bash
+.venv/bin/python benchmarks/decode_fusion.py
+```
+
+Environment variables are the same as above, plus `BENCH_SWEEP_ROWS` (default: `100000`). The defaults differ:
+`BENCH_ROWS` is `200000` and `BENCH_ROUNDS` is `7`.
+
+### Sample output
+
+Measured 2026-08-15.
+
+```
+aiochlite 1.6.0 @ f14512b
+CPU: AMD Ryzen 7 9800X3D 8-Core Processor
+OS: Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39
+Python: 3.14.5 (CPython)
+Rounds: 7, warmup: 2
+ClickHouse: 26.3.17.110
+
+=== Representative schemas (200,000 rows) ===
+
+Fully fixed-width row (5 columns)
+  Schema:    UInt64, UInt32, Float64, Int16, DateTime('UTC')
+  Payload:   5.0 MiB, 200,000 rows
+  Per-field: median  187.07 ms  [187.07, 194.24, 195.04, 188.86, 185.33, 185.99, 184.72]
+  Fused:     median  123.60 ms  [124.87, 123.77, 124.94, 123.60, 122.36, 123.57, 121.92]
+  Ratio:     1.51x (-33.9% time)
+
+Mixed row, one fusable run of 3 (5 columns)
+  Schema:    UInt64, String, DateTime('UTC'), Float64, Int32
+  Payload:   5.9 MiB, 200,000 rows
+  Per-field: median  220.22 ms  [219.87, 228.54, 221.85, 220.02, 220.22, 218.85, 221.88]
+  Fused:     median  219.61 ms  [222.55, 220.27, 218.98, 219.37, 220.86, 219.61, 218.80]
+  Ratio:     1.00x (-0.3% time)
+
+Wide numeric row (10 columns)
+  Schema:    UInt64, UInt64, UInt64, UInt64, UInt64, Float64, Float64, Float64, Float64, Float64
+  Payload:   15.3 MiB, 200,000 rows
+  Per-field: median  198.32 ms  [198.32, 198.82, 210.64, 197.15, 196.97, 206.01, 195.28]
+  Fused:     median   55.15 ms  [54.99, 54.92, 56.42, 55.84, 55.15, 53.84, 57.36]
+  Ratio:     3.60x (-72.2% time)
+
+=== Fusion gain by run length (100,000 rows, UInt64 columns only) ===
+
+  columns    per-field        fused   ratio
+        2     22.07 ms     16.00 ms   1.38x
+        3     29.47 ms     16.67 ms   1.77x
+        4     38.07 ms     16.87 ms   2.26x
+        5     48.29 ms     17.65 ms   2.74x
+        6     55.41 ms     18.16 ms   3.05x
+        7     64.55 ms     19.05 ms   3.39x
+        8     72.53 ms     19.29 ms   3.76x
+        9     84.94 ms     21.36 ms   3.98x
+       10     94.13 ms     21.90 ms   4.30x
+```
+
+The sweep is the part worth reading, and the two growth rates are what reproduce across runs. Per-field decoding
+grows roughly linearly with the column count — about 9 ms per column here — while the fused decoder grows by
+roughly 1 ms per column, because a longer `struct` format still produces one more Python object per field. The
+ratio follows from those two rates: it keeps climbing, and the curve is concave. The per-step increments are too
+noisy to read individually; only the shape survives repeated runs.
+
+On the mixed schema fusion buys nothing measurable. Across runs it lands on both sides of `1.00x`, which is the
+honest reading: a single run of three columns among variable-width ones does not pay for its own segment call.
+That is worth noting against `_MIN_SEGMENTED_FUSED_FIELDS = 3` — on this schema the threshold looks optimistic
+rather than conservative.
+
+## Converter benchmark: the value cache
+
+Script: `benchmarks/converter_cache.py`
+
+What it measures:
+- Fixed-width columns such as `DateTime` and `Decimal` arrive as integers and are turned into Python objects by a
+  converter. Those converters memoize with a bounded `lru_cache` (`_VALUE_CACHE_SIZE`, 4096 per converter).
+- The same schema is decoded twice, by a row reader whose converters memoize and by one whose converters do not.
+  The uncached variant is built by neutralizing `lru_cache` while the converters are created, so both readers run
+  identical conversion logic; the script asserts the patch took effect and that both decoders agree.
+- Two payloads: one where values repeat heavily, one where every value is distinct.
+- Same timing method as `decode_fusion.py`: agreement check outside the timer, alternating order, previous result
+  released before the next round, medians next to the raw series.
+
+Run:
+
+```bash
+.venv/bin/python benchmarks/converter_cache.py
+```
+
+### Sample output
+
+Measured 2026-08-15.
+
+```
+aiochlite 1.6.0 @ f14512b
+CPU: AMD Ryzen 7 9800X3D 8-Core Processor
+OS: Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39
+Python: 3.14.5 (CPython)
+Schema: UInt64, DateTime('UTC'), Decimal(18, 2)
+Rows: 200000, rounds: 7, warmup: 2, cache: 4096
+ClickHouse: 26.3.17.110
+
+Low cardinality — 200 distinct timestamps, 100 distinct prices
+  Cached:   median   44.68 ms  [44.79, 45.25, 44.68, 44.58, 44.24, 44.65, 45.69]
+  Uncached: median  150.55 ms  [151.54, 150.55, 150.91, 150.03, 150.15, 149.19, 151.01]
+  Cache changes decode time by -70.3%
+
+High cardinality — every timestamp and price distinct
+  Cached:   median  169.37 ms  [169.37, 167.76, 169.87, 169.83, 168.06, 173.24, 168.87]
+  Uncached: median  152.00 ms  [152.00, 152.07, 151.91, 151.22, 151.80, 154.33, 152.49]
+  Cache changes decode time by +11.4%
+```
+
+On this schema an all-miss cache adds about 11% to decode time. The lookup is paid once per converted value,
+so its absolute cost is fairly steady, but its share of the total depends on the rest of the schema. The benefit
+side is not a constant either: it scales with how much of the decode is conversion. Two of the three columns here
+go through a converter, so conversion dominates and the win reaches 70%. On a wide schema where one column in ten
+is a `DateTime`, that share is likely smaller — measure it rather than assume it.
+
+Measure it on your own data before treating the cache as free.

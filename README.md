@@ -50,7 +50,7 @@ A small, pure-Python async client for ClickHouse over HTTP. Results are decoded 
 - **One dependency**: `aiohttp`, joined by `tzdata` on Windows, which ships no timezone
   database of its own. aiochlite itself ships no compiled extensions.
 - **Server-side query parameters**: values are sent as ClickHouse `param_*` and never interpolated into the query text.
-- **Fast for pure Python**: in the [benchmark below](#benchmarks), `fetch_rows()` spends 24% less time than `aiochclient` and `fetch()` 16% less, against a client with C-accelerated parsing.
+- **Fast for pure Python**: in the [benchmark below](#benchmarks), where every client runs in its default configuration, `fetch_rows()` spends 24% less time than `aiochclient` and `fetch()` 16% less.
 - **Typed**: complete type hints for IDEs and static type checkers.
 - **Focused API**: ClickHouse over HTTP, without pandas, numpy, Arrow or Polars integrations.
 - **Tested** on Python 3.12–3.14 against ClickHouse 26.3, with additional compatibility coverage
@@ -470,6 +470,10 @@ Benchmark scripts live in [benchmarks/](benchmarks/).
 > These results were captured on a local machine with 8 CPU cores (16 threads) and 32 GB RAM, running
 > ClickHouse 26.3 LTS. Each client uses the configuration recommended by its documentation, including
 > the `aiohttp-speedups` extra for `aiochclient`.
+>
+> This measures the out-of-the-box experience, not one decoder against another: in its default configuration
+> `aiochclient` decodes `TSVWithNamesAndTypes`, `clickhouse-connect` decodes `Native`, and aiochlite decodes
+> `RowBinaryWithNamesAndTypes`. Part of the difference is the wire format rather than the decoder around it.
 
 Latest fetch-and-decode results for 100,000 rows (5 rounds, measured 2026-08-14):
 
