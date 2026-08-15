@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.6.0 (2026-08-15)
+
+### Changed
+- **`tzdata` is now required on Windows**, which carries no IANA database. Without it every
+  `DateTime` column would fail to decode. Other platforms are unaffected.
+
+### Fixed
+- A timezone the runtime could not load was ignored, and `DateTime` / `DateTime64` values then
+  decoded in the machine's local timezone and came back naive — hours off, with nothing to show
+  for it. **Such a column now raises `ChProtocolError` instead of returning a wrong value.**
+- `fetchone()` and `fetchval()` held the connection until the garbage collector reached the
+  generator behind them, which on a large result meant well after the call returned.
+- `async with AsyncChClient(...)` leaked the session when the opening ping was canceled rather
+  than failing, since `CancelledError` is not an `Exception`.
+- External table column names went into the structure unquoted, so a name such as `odd col`
+  was rejected by the server even though `insert()` already accepted it.
+
 ## 1.5.0 (2026-08-15)
 
 ### Added
