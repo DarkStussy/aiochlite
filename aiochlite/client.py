@@ -1,7 +1,7 @@
 import re
 import warnings
-from collections.abc import AsyncIterator
-from contextlib import contextmanager
+from collections.abc import AsyncGenerator, AsyncIterator
+from contextlib import aclosing, contextmanager
 from typing import Any, Generator, Literal, Mapping, Self, Sequence, TypedDict, Unpack
 
 from aiohttp import ClientSession, FormData, TCPConnector
@@ -241,7 +241,7 @@ class AsyncChClient:
 
         return params, data
 
-    async def _stream(self, params: dict[str, Any], data: str | FormData) -> AsyncIterator[Row]:
+    async def _stream(self, params: dict[str, Any], data: str | FormData) -> AsyncGenerator[Row, None]:
         async with self._http_client.stream(self._url, params=params, data=data) as (tz, byte_chunks):
             parser = RowBinaryWithNamesAndTypesStreamParser(
                 byte_chunks,
@@ -277,7 +277,7 @@ class AsyncChClient:
         params, data = self._prepare_query(query, format_name=None, **kwargs)
         await self._http_client.post(self._url, params=params, data=data)
 
-    async def stream(self, query: str, **kwargs: Unpack[QueryOptions]) -> AsyncIterator[Row]:
+    async def stream(self, query: str, **kwargs: Unpack[QueryOptions]) -> AsyncGenerator[Row, None]:
         """Execute query and iterate over results.
 
         Yields:
@@ -287,10 +287,11 @@ class AsyncChClient:
             ChClientError: If query execution fails.
         """
         params, data = self._prepare_query(query, **kwargs)
-        async for row in self._stream(params, data):
-            yield row
+        async with aclosing(self._stream(params, data)) as rows:
+            async for row in rows:
+                yield row
 
-    async def stream_rows(self, query: str, **kwargs: Unpack[QueryOptions]) -> AsyncIterator[tuple[Any, ...]]:
+    async def stream_rows(self, query: str, **kwargs: Unpack[QueryOptions]) -> AsyncGenerator[tuple[Any, ...], None]:
         """Execute query and iterate over results as raw tuples (no `Row` wrapper).
 
         Yields:
@@ -344,8 +345,9 @@ class AsyncChClient:
         Raises:
             ChClientError: If query execution fails.
         """
-        async for row in self.stream(query, **kwargs):
-            return row
+        async with aclosing(self.stream(query, **kwargs)) as rows:
+            async for row in rows:
+                return row
 
         return None
 
