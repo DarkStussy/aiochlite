@@ -13,7 +13,7 @@ from .converters.rowbinary import (
     parse_rowbinary_with_names_and_types,
     parse_rowbinary_with_names_and_types_lazy,
 )
-from .core import ChClientCore, ClientCoreOptions, ExternalTable, Row, build_external_data
+from .core import ChClientCore, ClientCoreOptions, ExternalTable, Row, build_external_data, build_insert_body
 from .exceptions import ChClientError, ChProtocolError
 from .http_client import HttpClient
 
@@ -455,13 +455,13 @@ class AsyncChClient:
 
         if isinstance(data[0], dict):
             format_name = "JSONEachRow"
-            body = "\n".join(to_json(row) for row in data)
+            rows = (to_json(row) for row in data)
         else:
             format_name = "JSONCompactEachRow"
-            body = "\n".join(to_json(list(row)) for row in data)
+            rows = (to_json(list(row)) for row in data)
 
         await self._http_client.post(
             self._url,
             params=self._core.build_query_params(settings=settings),
-            data=f"INSERT INTO {db}.{table}{columns_clause} FORMAT {format_name}\n{body}",
+            data=build_insert_body(f"INSERT INTO {db}.{table}{columns_clause} FORMAT {format_name}\n", rows),
         )
