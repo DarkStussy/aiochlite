@@ -93,3 +93,61 @@ jobs:
         with:
           files: ./coverage.xml
           fail_ci_if_error: false
+
+  aiohttp-range:
+    name: aiohttp (${{ matrix.label }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The ends of the supported range; the job above covers whatever the lockfile pins.
+          - label: oldest
+            spec: "aiohttp==3.13.0"
+          - label: newest
+            spec: "aiohttp<4"
+    runs-on: ubuntu-latest
+    services:
+      clickhouse:
+        image: clickhouse/clickhouse-server:26.3
+        ports:
+          - 8123:8123
+        env:
+          CLICKHOUSE_DB: test
+          CLICKHOUSE_USER: test
+          CLICKHOUSE_PASSWORD: test
+          CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+        options: >-
+          --health-cmd "clickhouse-client --query 'SELECT 1'"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      CLICKHOUSE_URL: http://localhost:8123
+      CLICKHOUSE_USER: test
+      CLICKHOUSE_PASSWORD: test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          enable-cache: true
+      - name: Install dependencies
+        run: uv sync --python 3.14
+      - name: Install ${{ matrix.spec }}
+        run: |
+          uv pip install --upgrade "${{ matrix.spec }}"
+          uv run --no-sync python -c "import aiohttp; print(aiohttp.__version__)"
+      - name: Wait for ClickHouse
+        run: |
+          for i in {1..30}; do
+            if curl -sSf http://localhost:8123/ping > /dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "ClickHouse did not become ready" >&2
+          exit 1
+      - name: Run tests
+        run: uv run --no-sync pytest -q
