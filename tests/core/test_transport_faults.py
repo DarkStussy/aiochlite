@@ -86,12 +86,17 @@ async def test_truncated_body_is_a_transport_error(faulty_client: Callable[..., 
 async def test_truncated_stream_is_a_transport_error(faulty_client: Callable[..., Awaitable[AsyncChClient]]):
     """Rows already handed over do not turn a cut-off stream into a success."""
     client = await faulty_client(_cut_mid_body)
+    seen: list[Any] = []
 
-    async def consume() -> list[Any]:
-        return [row async for row in client.stream("SELECT n FROM t")]
+    async def consume():
+        async for row in client.stream("SELECT n FROM t"):
+            # One by one: a comprehension would drop whatever arrived before the failure.
+            seen.append(row["n"])  # noqa: PERF401
 
     with pytest.raises(ChTransportError):
         await consume()
+
+    assert seen == [1, 2]
 
 
 async def test_disconnect_before_the_response_is_a_transport_error(

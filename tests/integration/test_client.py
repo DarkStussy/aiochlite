@@ -75,8 +75,8 @@ async def test_client_credentials_win_over_the_session_headers(
         assert await client.fetchval("SELECT currentUser()") == clickhouse_config["user"]
 
 
-async def test_closing_a_stream_early_frees_the_connection(clickhouse_config: ChConfig) -> None:
-    """End to end: the connection goes back to a pool of one, not just the response object away."""
+async def test_closing_a_stream_early_frees_the_pool_slot(clickhouse_config: ChConfig) -> None:
+    """End to end: a pool of one lets the next query through, whether or not the socket is reused."""
     aiohttp = pytest.importorskip("aiohttp")
     query = "SELECT number, repeat('x', 200) AS s FROM numbers(200000)"
 
