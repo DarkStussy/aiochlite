@@ -2,6 +2,7 @@ import asyncio
 import ipaddress
 from datetime import date, datetime, timedelta
 from decimal import Decimal
+from typing import Any, Callable
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -192,30 +193,58 @@ def test_parse_rowbinary_datetime_server_timezone_fallback():
     assert parsed[0][3][0].tzinfo is None
 
 
-def test_datetime_without_any_timezone_is_a_protocol_error():
+_TIMESTAMP = 1_734_170_400
+_MOMENT = datetime(2024, 12, 14, 10, 0, tzinfo=ZoneInfo("UTC"))
+
+
+def _datetime_payload(ch_type: str) -> bytes:
+    value = (
+        _TIMESTAMP.to_bytes(4, "little")
+        if ch_type.startswith("DateTime(") or ch_type == "DateTime"
+        else (_TIMESTAMP * 1000).to_bytes(8, "little", signed=True)
+    )
+    return b"".join([_encode_varuint(1), _encode_string("dt"), _encode_string(ch_type), value])
+
+
+def _eager(payload: bytes, server_tz: str | None) -> list[Any]:
+    _, _, rows = parse_rowbinary_with_names_and_types(payload, server_tz)
+    return [row[0] for row in rows]
+
+
+def _lazy(payload: bytes, server_tz: str | None) -> list[Any]:
+    _, _, rows = parse_rowbinary_with_names_and_types_lazy(payload, server_tz)
+    return [row[0] for row in rows]
+
+
+def _streamed(payload: bytes, server_tz: str | None) -> list[Any]:
+    async def _chunks():
+        yield payload
+
+    async def _run():
+        parser = RowBinaryWithNamesAndTypesStreamParser(_chunks(), server_tz=server_tz)
+        await parser.read_header()
+        return [row[0] async for row in parser.rows()]
+
+    return asyncio.run(_run())
+
+
+Consumer = Callable[[bytes, str | None], list[Any]]
+
+_PARSERS = pytest.mark.parametrize("consume", [_eager, _lazy, _streamed], ids=["eager", "lazy", "stream"])
+
+
+@_PARSERS
+@pytest.mark.parametrize("ch_type", ["DateTime", "DateTime64(3)"])
+def test_datetime_without_any_timezone_is_a_protocol_error(ch_type: str, consume: Consumer):
     """Nothing states the wall clock here, and guessing the machine's is how the value goes wrong."""
-    parts = [
-        _encode_varuint(1),
-        _encode_string("dt"),
-        _encode_string("DateTime"),
-        (1_734_170_400).to_bytes(4, "little"),
-    ]
-
     with pytest.raises(ChProtocolError, match="X-ClickHouse-Timezone"):
-        list(parse_rowbinary_with_names_and_types(b"".join(parts), None)[2])
+        consume(_datetime_payload(ch_type), None)
 
 
-def test_column_timezone_stands_in_for_a_missing_header():
-    parts = [
-        _encode_varuint(1),
-        _encode_string("dt"),
-        _encode_string("DateTime('UTC')"),
-        (1_734_170_400).to_bytes(4, "little"),
-    ]
-
-    _, _, rows = parse_rowbinary_with_names_and_types(b"".join(parts), None)
-
-    assert next(iter(rows))[0] == datetime(2024, 12, 14, 10, 0, tzinfo=ZoneInfo("UTC"))
+@_PARSERS
+@pytest.mark.parametrize("ch_type", ["DateTime('UTC')", "DateTime64(3, 'UTC')"])
+def test_column_timezone_stands_in_for_a_missing_header(ch_type: str, consume: Consumer):
+    assert consume(_datetime_payload(ch_type), None) == [_MOMENT]
 
 
 def test_unloadable_server_timezone_only_matters_for_datetime():
