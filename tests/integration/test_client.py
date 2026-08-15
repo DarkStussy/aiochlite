@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
+import asyncio
+from contextlib import aclosing, asynccontextmanager
 from typing import AsyncIterator
 
 import pytest
@@ -72,3 +73,19 @@ async def test_client_credentials_win_over_the_session_headers(
     async with aiohttp.ClientSession(headers=headers) as session:
         client = AsyncChClient(**clickhouse_config, session=session)
         assert await client.fetchval("SELECT currentUser()") == clickhouse_config["user"]
+
+
+async def test_closing_a_stream_early_frees_the_connection(clickhouse_config: ChConfig) -> None:
+    """End to end: the connection goes back to a pool of one, not just the response object away."""
+    aiohttp = pytest.importorskip("aiohttp")
+    query = "SELECT number, repeat('x', 200) AS s FROM numbers(200000)"
+
+    async with (
+        aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=1)) as session,
+        _client(clickhouse_config, session=session) as ch_client,
+    ):
+        async with aclosing(ch_client.stream(query)) as rows:
+            async for _ in rows:
+                break
+
+        assert await asyncio.wait_for(ch_client.fetchval("SELECT 1"), timeout=10) == 1
