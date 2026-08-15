@@ -56,9 +56,3 @@ branch = true
 fail_under = 85
 show_missing = true
 skip_covered = false
-exclude_lines = [
-    "pragma: no cover",
-    "raise NotImplementedError",
-    "if TYPE_CHECKING:",
-    "@overload",
-]
