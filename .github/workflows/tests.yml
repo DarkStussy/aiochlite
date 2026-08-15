@@ -28,6 +28,13 @@ on:
       - "mypy.ini"
       - "uv.lock"
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 jobs:
   test:
     strategy:
