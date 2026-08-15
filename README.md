@@ -389,6 +389,9 @@ async with ClientSession(timeout=timeout) as session:
         result = await client.fetch("SELECT 1")
 ```
 
+A session you pass in stays yours: the client sends its credentials per request rather than adding
+them to the session headers, and `close()` leaves the session open for you to close.
+
 ### Enable Compression
 
 ```python

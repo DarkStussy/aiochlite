@@ -1,10 +1,10 @@
 from typing import Any, AsyncIterator, cast
 
 import pytest
-from aiohttp import ClientResponse
+from aiohttp import ClientResponse, ClientSession
 
 from aiochlite.exceptions import ChClientError, ChServerError
-from aiochlite.http_client import _error_text, _exception_sentinel, _read_chunks
+from aiochlite.http_client import HttpClient, _error_text, _exception_sentinel, _read_chunks
 
 _TAG = "abcdefghijklmnop"
 _QUERY_ID = "8b95869b-2ba6-416f-a812-fe004b68a095"
@@ -113,3 +113,57 @@ async def test_body_exception_carries_response_metadata():
     assert error.value.query_id == _QUERY_ID
     assert error.value.exception_tag == _TAG
     assert str(error.value) == _MESSAGE.decode()
+
+
+class _FakeSession:
+    """Enough of a ``ClientSession`` to record what a request was given."""
+
+    def __init__(self) -> None:
+        self.headers: dict[str, str] = {}
+        self.sent: dict[str, Any] = {}
+        self.closed = False
+
+    def request(self, method: str, url: str, **kwargs: Any) -> Any:
+        self.sent = kwargs
+        return _Answering(_response([]))
+
+    async def close(self):
+        self.closed = True
+
+
+class _Answering:
+    def __init__(self, response: ClientResponse):
+        self._response = response
+
+    async def __aenter__(self) -> ClientResponse:
+        return self._response
+
+    async def __aexit__(self, *args: object) -> bool:
+        return False
+
+
+async def test_credentials_go_with_the_request_not_into_the_session():
+    """A caller-supplied session may serve other hosts too."""
+    session = _FakeSession()
+    headers = {"X-ClickHouse-User": "reader", "X-ClickHouse-Key": "secret"}
+
+    await HttpClient(cast(ClientSession, session), headers=headers, owns_session=False).get("http://ch", {})
+
+    assert session.sent["headers"] == headers
+    assert session.headers == {}
+
+
+async def test_supplied_session_is_left_open():
+    session = _FakeSession()
+
+    await HttpClient(cast(ClientSession, session), headers={}, owns_session=False).close()
+
+    assert not session.closed
+
+
+async def test_owned_session_is_closed():
+    session = _FakeSession()
+
+    await HttpClient(cast(ClientSession, session), headers={}, owns_session=True).close()
+
+    assert session.closed

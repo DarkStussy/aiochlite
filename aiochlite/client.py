@@ -144,7 +144,8 @@ class AsyncChClient:
             small share of the selected columns is read; where exactly it breaks even depends on
             how expensive the skipped columns are to decode.
         enable_compression (bool): Enable HTTP compression.
-        session (ClientSession | None): Optional aiohttp session to use.
+        session (ClientSession | None): Session to send requests through. A session passed here
+            stays the caller's: `close()` leaves it open, and its headers are left untouched.
     """
 
     __slots__ = ("_core", "_database", "_http_client", "_lazy_decode", "_url")
@@ -163,10 +164,11 @@ class AsyncChClient:
         self._lazy_decode = lazy_decode
         self._core = ChClientCore(**kwargs)
 
-        headers = self._core.build_headers()
-        session = session or ClientSession(connector=TCPConnector(ssl=verify))
-        session.headers.update(headers)
-        self._http_client = HttpClient(session)
+        self._http_client = HttpClient(
+            session if session is not None else ClientSession(connector=TCPConnector(ssl=verify)),
+            headers=self._core.build_headers(),
+            owns_session=session is None,
+        )
 
     async def __aenter__(self) -> Self:
         try:
@@ -181,7 +183,7 @@ class AsyncChClient:
         await self.close()
 
     async def close(self):
-        """Close the underlying HTTP client session."""
+        """Close the session the client opened. A session passed to the constructor is left alone."""
         await self._http_client.close()
 
     async def ping(self, *, raise_on_error: bool = False) -> bool:

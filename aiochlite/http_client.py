@@ -80,8 +80,10 @@ def _exception_message(block: bytes) -> str:
 class HttpClient:
     """Wrapper around aiohttp ClientSession for HTTP operations."""
 
-    def __init__(self, session: ClientSession):
+    def __init__(self, session: ClientSession, *, headers: Mapping[str, str], owns_session: bool):
         self._session = session
+        self._headers = dict(headers)
+        self._owns_session = owns_session
 
     @asynccontextmanager
     async def _request(
@@ -93,7 +95,7 @@ class HttpClient:
     ) -> AsyncGenerator[ClientResponse, None]:
         """Single place where a request is sent, transport errors are named and the status checked."""
         with _transport_boundary():
-            async with self._session.request(method, url, params=params, data=data) as response:
+            async with self._session.request(method, url, params=params, data=data, headers=self._headers) as response:
                 await _check_response(response)
                 yield response
 
@@ -125,6 +127,10 @@ class HttpClient:
             yield response.headers.get(_TIMEZONE_HEADER), _read_chunks(response)
 
     async def close(self):
+        """Close the session, unless it was supplied by the caller and is theirs to close."""
+        if not self._owns_session:
+            return
+
         with _transport_boundary():
             await self._session.close()
 

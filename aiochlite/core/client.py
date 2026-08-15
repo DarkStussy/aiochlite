@@ -35,13 +35,8 @@ class ChClientCore:
         self._enable_compression = kwargs.get("enable_compression", False)
 
     def build_headers(self) -> dict[str, str]:
-        headers = {}
-        if self._user:
-            headers["X-ClickHouse-User"] = self._user
-        if self._password:
-            headers["X-ClickHouse-Key"] = self._password
-
-        return headers
+        # Sent even when empty, to override a credential a caller-supplied session already carries.
+        return {"X-ClickHouse-User": self._user, "X-ClickHouse-Key": self._password}
 
     def build_query_params(
         self,

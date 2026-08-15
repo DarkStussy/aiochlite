@@ -60,3 +60,15 @@ async def test_custom_session(clickhouse_config: ChConfig) -> None:
     aiohttp = pytest.importorskip("aiohttp")
     async with aiohttp.ClientSession() as session, _client(clickhouse_config, session=session) as ch_client:
         assert await ch_client.fetchval("SELECT 1") == 1
+
+
+async def test_client_credentials_win_over_the_session_headers(
+    ch_client: AsyncChClient,  # Skip when ClickHouse is unavailable.
+    clickhouse_config: ChConfig,
+) -> None:
+    """Request headers are merged over the session ones, so a stale key must not reach ClickHouse."""
+    aiohttp = pytest.importorskip("aiohttp")
+    headers = {"X-ClickHouse-User": "ghost", "X-ClickHouse-Key": "stale"}
+    async with aiohttp.ClientSession(headers=headers) as session:
+        client = AsyncChClient(**clickhouse_config, session=session)
+        assert await client.fetchval("SELECT currentUser()") == clickhouse_config["user"]

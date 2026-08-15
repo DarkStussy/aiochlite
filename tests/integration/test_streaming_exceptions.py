@@ -90,12 +90,23 @@ async def test_server_error_carries_metadata(ch_client: AsyncChClient):
 
 async def test_failed_context_entry_closes_the_session():
     """__aexit__ never runs when __aenter__ raises, so the session has to be closed there."""
+    client = AsyncChClient("http://localhost:9")
+    with pytest.raises(ChTransportError):
+        async with client:
+            pass
+
+    assert client._http_client._session.closed
+
+
+async def test_failed_context_entry_leaves_a_supplied_session_open():
+    """A failed context entry must not close a caller-owned session."""
     session = ClientSession()
     with pytest.raises(ChTransportError):
         async with AsyncChClient("http://localhost:9", session=session):
             pass
 
-    assert session.closed
+    assert not session.closed
+    await session.close()
 
 
 @pytest.mark.parametrize("ch_client", [True], ids=["lazy"], indirect=True)
