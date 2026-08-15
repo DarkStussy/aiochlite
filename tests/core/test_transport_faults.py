@@ -32,9 +32,9 @@ async def _hang_up(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
 
 
 async def _never_answer(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
-    # Waiting for the client to give up doubles as the teardown signal.
+    """Read the request and go quiet, leaving the client to hit its own timeout."""
     await _read_request(reader)
-    await reader.read()
+    await asyncio.Event().wait()
 
 
 @pytest.fixture
@@ -42,9 +42,21 @@ async def faulty_client() -> AsyncIterator[Callable[..., Awaitable[AsyncChClient
     """Hand out clients pointed at a local server that misbehaves in a chosen way."""
     servers: list[asyncio.Server] = []
     sessions: list[ClientSession] = []
+    handlers: set[asyncio.Task[None]] = set()
+
+    def _tracked(handler: Handler) -> Handler:
+        """Keep hold of the handler task: waiting for one to end on its own can wait forever."""
+
+        async def _run(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+            task = asyncio.current_task()
+            if task is not None:
+                handlers.add(task)
+            await handler(reader, writer)
+
+        return _run
 
     async def _make(handler: Handler, total: float | None = None) -> AsyncChClient:
-        server = await asyncio.start_server(handler, "127.0.0.1", 0)
+        server = await asyncio.start_server(_tracked(handler), "127.0.0.1", 0)
         servers.append(server)
         session = ClientSession(timeout=ClientTimeout(total=total))
         sessions.append(session)
@@ -54,9 +66,10 @@ async def faulty_client() -> AsyncIterator[Callable[..., Awaitable[AsyncChClient
     try:
         yield _make
     finally:
-        # Sessions first: closing them is what lets a waiting handler see the end of the connection.
         for session in sessions:
             await session.close()
+        for task in handlers:
+            task.cancel()
         for server in servers:
             server.close()
             await server.wait_closed()
