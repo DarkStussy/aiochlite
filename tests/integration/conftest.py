@@ -43,6 +43,14 @@ async def ch_client(request: pytest.FixtureRequest, clickhouse_config: ChConfig)
 
 
 @pytest.fixture
+async def exception_tag_server(ch_client: AsyncChClient):
+    """Skip on servers without `X-ClickHouse-Exception-Tag`, which arrived in ClickHouse 25.11."""
+    version: str = await ch_client.fetchval("SELECT version()")
+    if tuple(int(part) for part in version.split(".")[:2]) < (25, 11):
+        pytest.skip(f"ClickHouse {version} predates the exception tag")
+
+
+@pytest.fixture
 async def make_table(ch_client: AsyncChClient) -> AsyncIterator[TableFactory]:
     created: list[str] = []
 

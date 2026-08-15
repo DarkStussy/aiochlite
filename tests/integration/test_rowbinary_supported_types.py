@@ -59,7 +59,8 @@ async def test_rowbinary_supported_types(ch_client: AsyncChClient):
             CAST('{"a":1,"b":[true,null]}' AS JSON) AS doc_json
         """
 
-    row = await ch_client.fetchone(query)
+    # Time / Time64 are behind the flag until 26.x, where it is on by default.
+    row = await ch_client.fetchone(query, settings={"enable_time_time64_type": 1})
     assert row is not None
 
     assert row["b"] is True

@@ -52,6 +52,8 @@ A small, pure-Python async client for ClickHouse over HTTP. Results are decoded 
 - **Fast for pure Python**: in the [benchmark below](#benchmarks), `fetch_rows()` spends 24% less time than `aiochclient` and `fetch()` 16% less, against a client with C-accelerated parsing.
 - **Typed**: complete type hints for IDEs and static type checkers.
 - **Focused API**: ClickHouse over HTTP, without pandas, numpy, Arrow or Polars integrations.
+- **Tested** on Python 3.12–3.14 against ClickHouse 26.3, with additional compatibility coverage
+  for ClickHouse 25.8 LTS.
 
 **Choosing a client.** For maximum throughput or DataFrame integrations, use the official
 [clickhouse-connect](https://github.com/ClickHouse/clickhouse-connect): it also has a real asyncio

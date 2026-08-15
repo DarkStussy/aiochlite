@@ -139,7 +139,8 @@ class AsyncChClient:
         user (str): ClickHouse username.
         password (str): ClickHouse password.
         database (str): Default database name.
-        verify (bool): Verify SSL certificate.
+        verify (bool): Verify SSL certificate. Ignored when `session` is given, which brings
+            its own connector and with it its own SSL policy.
         lazy_decode (bool): If True, decode row values lazily per cell. Worth it only when a
             small share of the selected columns is read; where exactly it breaks even depends on
             how expensive the skipped columns are to decode.

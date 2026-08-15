@@ -48,6 +48,8 @@ class ChClientCore:
         url_params: dict[str, Any] = {
             "database": self._database,
             "output_format_binary_write_json_as_string": 1,
+            # Servers before 25.8 quote 64-bit integers, which would decode a JSON number as a string.
+            "output_format_json_quote_64bit_integers": 0,
         }
 
         if self._enable_compression:
