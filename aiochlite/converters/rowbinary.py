@@ -3,7 +3,7 @@ import json
 import re
 import struct
 from collections.abc import AsyncIterator, Sequence
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from functools import lru_cache
 from types import CodeType
@@ -211,6 +211,16 @@ def _decimal_size(precision: int) -> int:
 
 
 _EPOCH_DATE = date(1970, 1, 1)
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+
+
+def _from_epoch(seconds: int, tz: ZoneInfo) -> datetime:
+    """Windows rejects a negative timestamp, so before 1970 the offset is applied by hand."""
+    if seconds < 0:
+        return (_EPOCH + timedelta(seconds=seconds)).astimezone(tz)
+
+    return datetime.fromtimestamp(seconds, tz=tz)
+
 
 # Bound for converters shared across queries.
 _VALUE_CACHE_SIZE = 4096
@@ -266,7 +276,7 @@ def _datetime_converter(ch_type: str, server_tz: str | None) -> Callable[[int], 
     strip_tz = explicit_tz is None
 
     def _convert(ts: int) -> datetime:
-        dt = datetime.fromtimestamp(ts, tz=tz)
+        dt = _from_epoch(ts, tz)
         return dt.replace(tzinfo=None) if strip_tz else dt
 
     return _convert
@@ -338,7 +348,7 @@ def _datetime64_converter(ch_type: str, server_tz: str | None) -> Callable[[int]
 
     def _convert(ticks: int) -> datetime:
         base_seconds, micros = divmod(_to_micros(ticks), 1_000_000)
-        dt = datetime.fromtimestamp(base_seconds, tz=tz)
+        dt = _from_epoch(base_seconds, tz)
         if micros:
             dt = dt + timedelta(microseconds=micros)
         return dt.replace(tzinfo=None) if strip_tz else dt

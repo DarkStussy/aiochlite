@@ -272,6 +272,44 @@ def test_unloadable_server_timezone_only_matters_for_datetime():
         list(parse_rowbinary_with_names_and_types(b"".join(parts), "Not/AZone")[2])
 
 
+class _NoNegativeTimestamps:
+    """`datetime` as Windows has it, whose C runtime knows no time before 1970.
+
+    A stand-in rather than a subclass: the decoder reaches for nothing else on it.
+    """
+
+    @staticmethod
+    def fromtimestamp(timestamp: float, tz: ZoneInfo | None = None) -> datetime:
+        if timestamp < 0:
+            raise OSError(22, "Invalid argument")
+        return datetime.fromtimestamp(timestamp, tz)
+
+
+@pytest.mark.parametrize("ch_type", ["DateTime64(3, 'UTC')", "DateTime64(9, 'UTC')"])
+def test_a_pre_epoch_datetime_decodes_where_the_platform_rejects_a_negative_timestamp(
+    ch_type: str, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(rowbinary, "datetime", _NoNegativeTimestamps)
+    rowbinary._reader_for_type.cache_clear()
+    rowbinary._compiled_row_decoder.cache_clear()
+    moment = datetime(1960, 1, 1, 10, 0, tzinfo=ZoneInfo("UTC"))
+    scale = int(ch_type[11])
+    ticks = int(moment.timestamp()) * 10**scale
+    parts = [
+        _encode_varuint(1),
+        _encode_string("ts"),
+        _encode_string(ch_type),
+        ticks.to_bytes(8, "little", signed=True),
+    ]
+
+    _names, _types, rows = parse_rowbinary_with_names_and_types(b"".join(parts))
+
+    assert [row[0] for row in rows] == [moment]
+
+    rowbinary._reader_for_type.cache_clear()
+    rowbinary._compiled_row_decoder.cache_clear()
+
+
 def test_parse_rowbinary_datetime64_below_a_microsecond():
     """DateTime64(P > 6) carries digits Python cannot hold, cut toward zero as the server narrows."""
     after = int(datetime(2025, 12, 14, 10, 0, 0, tzinfo=ZoneInfo("UTC")).timestamp()) * 10**9 + 123_456_789

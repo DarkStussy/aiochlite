@@ -3,6 +3,10 @@
 ## 1.7.0 (2026-08-17)
 
 ### Fixed
+- **On Windows, a `DateTime64` before 1970 raised `OSError: [Errno 22] Invalid argument`** instead
+  of decoding. The conversion went through `datetime.fromtimestamp`, which the C runtime there
+  rejects for a negative timestamp; such a value is now offset from the epoch by hand. Other
+  platforms decode as before, and `DateTime` is unsigned so it was never affected.
 - A response truncated in the middle of a fixed-width value raised `struct.error` instead of
   `ChProtocolError`, because eight `_BinaryReader` methods left the bounds check to `struct` and
   `struct.error` is no `ValueError`. It escaped the decode boundary and reached the caller raw.
