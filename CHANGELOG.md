@@ -22,7 +22,12 @@
   `UInt64, Float64, String`, 3.6x on `UInt64, Nullable(String), Nullable(DateTime)`, 2.1x-2.9x
   streaming. The compiled code is cached per schema; the converters it uses are not, so their
   per-query caches are still released with the query. A column of any other type, `Array` and
-  `UUID` among them, keeps the reader path.
+  `Map` among them, keeps the reader path.
+- `UUID`, `IPv6`, `FixedString` and `Decimal` past 64 bits now count as fixed-width wherever the
+  two paths above look for one, having previously been read one column at a time. They travel as
+  raw bytes through a `Ns` struct code and are widened by their converter. On 200k rows of
+  `Decimal128(2), UInt64`: 4.5x; `FixedString(16), UInt64`: 2.5x; `IPv6, UInt64`: 1.7x;
+  `UUID, UInt64`: 1.4x, where building the `UUID` objects is most of what is left.
 
 ## 1.6.0 (2026-08-15)
 

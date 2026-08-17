@@ -378,13 +378,19 @@ def _decimal_reader(ch_type: str) -> Callable[[_Reader], Decimal]:
     return _read_dec
 
 
+def _fixedstring_size(ch_type: str) -> int:
+    return int(ch_type[ch_type.index("(") + 1 : ch_type.rindex(")")].strip())
+
+
+def _fixedstring_from_bytes(raw: bytes) -> str:
+    return raw.decode("utf-8", errors="replace").rstrip("\x00")
+
+
 def _fixedstring_reader(ch_type: str) -> Callable[[_Reader], str]:
-    inner = ch_type[ch_type.index("(") + 1 : ch_type.rindex(")")]
-    size = int(inner.strip())
+    size = _fixedstring_size(ch_type)
 
     def _read_fixedstring(reader: _Reader) -> str:
-        raw = reader._read(size).tobytes()
-        return raw.decode("utf-8", errors="replace").rstrip("\x00")
+        return _fixedstring_from_bytes(reader._read(size).tobytes())
 
     return _read_fixedstring
 
@@ -507,9 +513,13 @@ def _tuple_reader(ch_type: str, server_tz: str | None) -> Callable[[_Reader], tu
     return _read_tuple
 
 
-def _uuid_reader(reader: _Reader) -> UUID:
-    raw = reader._read(16).tobytes()
+def _uuid_from_bytes(raw: bytes) -> UUID:
+    """ClickHouse writes a UUID as two UInt64 (hi, lo), each little-endian."""
     return UUID(bytes=raw[:8][::-1] + raw[8:][::-1])
+
+
+def _uuid_reader(reader: _Reader) -> UUID:
+    return _uuid_from_bytes(reader._read(16).tobytes())
 
 
 _PRIMITIVE_READERS: dict[str, Callable[[_Reader], Any]] = {
@@ -599,7 +609,9 @@ _STRUCT_CODES: dict[str, str] = {
     "UInt64": "Q",
 }
 
-_DECIMAL_STRUCT_CODES: dict[int, str] = {4: "i", 8: "q"}
+# 16- and 32-byte decimals have no integer code, so they travel as raw bytes and are widened
+# by their converter.
+_DECIMAL_STRUCT_CODES: dict[int, str] = {4: "i", 8: "q", 16: "16s", 32: "32s"}
 
 # Shorter runs keep the plain per-field reader. A fully fixed-width row needs no segments, so
 # two fields already pay off; a mixed row costs one extra call per variable-width column and
@@ -625,10 +637,23 @@ _FIXED_CONVERTERS: dict[str, Callable[[str, str | None], tuple[str, Callable[[An
     "DateTime64": lambda ch_type, tz: ("q", _value_cache(_datetime64_converter(ch_type, tz))),
     "Enum8": lambda ch_type, _tz: ("b", _enum_converter(ch_type)),
     "Enum16": lambda ch_type, _tz: ("h", _enum_converter(ch_type)),
+    "FixedString": lambda ch_type, _tz: (f"{_fixedstring_size(ch_type)}s", _fixedstring_from_bytes),
     "IPv4": lambda _ch_type, _tz: ("I", ipaddress.IPv4Address),
+    "IPv6": lambda _ch_type, _tz: ("16s", ipaddress.IPv6Address),
     "Time": lambda _ch_type, _tz: ("i", _seconds_to_timedelta),
     "Time64": lambda ch_type, _tz: ("q", _value_cache(_time64_converter(ch_type))),
+    "UUID": lambda _ch_type, _tz: ("16s", _uuid_from_bytes),
 }
+
+
+def _wide_decimal_converter(ch_type: str) -> Callable[[bytes], Decimal]:
+    """Raw little-endian bytes -> scaled Decimal, for precisions past 64 bits."""
+    scale = _decimal_converter(ch_type)
+
+    def _convert(raw: bytes) -> Decimal:
+        return scale(int.from_bytes(raw, "little", signed=True))
+
+    return _convert
 
 
 def _fixed_field(ch_type: str, server_tz: str | None) -> tuple[str, Callable[[Any], Any] | None] | None:
@@ -650,10 +675,13 @@ def _fixed_field(ch_type: str, server_tz: str | None) -> tuple[str, Callable[[An
 
     if base.startswith("Decimal"):
         precision, _ = _decimal_meta(unwrapped)
-        decimal_code = _DECIMAL_STRUCT_CODES.get(_decimal_size(precision))
+        size = _decimal_size(precision)
+        decimal_code = _DECIMAL_STRUCT_CODES.get(size)
         if decimal_code is None:
             return None
-        return decimal_code, _value_cache(_decimal_converter(unwrapped))
+
+        widen = _wide_decimal_converter if decimal_code.endswith("s") else _decimal_converter
+        return decimal_code, _value_cache(widen(unwrapped))
 
     return None
 

@@ -647,6 +647,15 @@ def test_variable_width_types_have_no_fixed_width(ch_type: str):
     assert rowbinary._fixed_width(ch_type) is None
 
 
+@pytest.mark.parametrize("ch_type", FIXED_WIDTH_TYPES)
+def test_every_fixed_width_type_has_a_struct_code_of_that_width(ch_type: str):
+    """A code of the wrong width would desynchronize every row after the first."""
+    field = rowbinary._fixed_field(ch_type, "UTC")
+
+    assert field is not None
+    assert struct.calcsize(f"<{field[0]}") == rowbinary._fixed_width(ch_type)
+
+
 def _fixed_only_payload() -> bytes:
     parts = [
         _encode_varuint(3),
@@ -871,6 +880,10 @@ CODEGEN_SCHEMAS = [
     ["Nullable(UInt64)", "Nullable(String)", "Int32"],
     ["UInt64", "Nullable(DateTime('UTC'))", "String"],
     ["LowCardinality(Nullable(String))", "Nullable(Decimal64(2))"],
+    ["UUID", "String"],
+    ["FixedString(5)", "UInt64"],
+    ["Decimal128(2)", "String", "IPv6"],
+    ["Nullable(UUID)", "Nullable(FixedString(5))"],
 ]
 
 # Empty, one byte, exactly at and either side of the single-byte varint limit, and multi-byte.
@@ -898,6 +911,14 @@ def _decimal64(i: int) -> bytes:
     return (i * 7 - 3).to_bytes(8, "little", signed=True)
 
 
+def _uuid(i: int) -> bytes:
+    return (i + 1).to_bytes(8, "little") + (i + 2).to_bytes(8, "little")
+
+
+def _fixedstring5(i: int) -> bytes:
+    return f"ab{i % 10}".encode().ljust(5, b"\x00")
+
+
 def _codegen_payload(types: list[str], rows: int) -> bytes:
     values: dict[str, Callable[[int], bytes]] = {
         "String": _string,
@@ -914,6 +935,12 @@ def _codegen_payload(types: list[str], rows: int) -> bytes:
         "Nullable(DateTime('UTC'))": _nullable(_datetime_utc),
         "Nullable(Decimal64(2))": _nullable(_decimal64),
         "LowCardinality(Nullable(String))": _nullable(_string),
+        "UUID": _uuid,
+        "FixedString(5)": _fixedstring5,
+        "IPv6": lambda i: bytes([i % 256]) + bytes(15),
+        "Decimal128(2)": lambda i: (i * 11 - 5).to_bytes(16, "little", signed=True),
+        "Nullable(UUID)": _nullable(_uuid),
+        "Nullable(FixedString(5))": _nullable(_fixedstring5),
     }
     header = [_encode_varuint(len(types))]
     header += [_encode_string(f"c{idx}") for idx in range(len(types))]
@@ -946,7 +973,7 @@ def test_compiled_decoder_rejects_a_truncated_row(cut: int):
 
 @pytest.mark.parametrize(
     "ch_type",
-    ["Array(UInt8)", "Map(String, UInt8)", "JSON", "UUID", "Nullable(UUID)", "Nullable(Array(UInt8))"],
+    ["Array(UInt8)", "Map(String, UInt8)", "Tuple(String, UInt8)", "JSON", "Nullable(Array(UInt8))"],
 )
 def test_an_uncovered_column_is_not_compiled(ch_type: str):
     assert rowbinary._compiled_row_decoder(("UInt64", ch_type), "UTC", as_tuple=True) is None
