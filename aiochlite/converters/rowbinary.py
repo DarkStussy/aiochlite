@@ -524,20 +524,22 @@ def _uuid_reader(reader: _Reader) -> UUID:
 
 def _loads_at(text: str, _idx: int) -> tuple[Any, int]:
     """Stand-in where a runtime exposes no C scanner."""
-    return json.loads(text), 0
+    return json.loads(text), len(text)
 
 
-# What `loads` reaches after argument checks and a whitespace scan, neither of which a
-# length-delimited field needs. They cost 40% of the decode.
+# What `loads` reaches after argument checks and a whitespace scan: 40% of the decode. Those checks
+# also reject a second value, so callers check the end offset instead.
 _scan_json = getattr(json.JSONDecoder(), "scan_once", _loads_at)
 
 
 def _json_reader(reader: _Reader) -> Any:
     text = reader.read_string()
     try:
-        return _scan_json(text, 0)[0]
-    except StopIteration:
-        return json.loads(text)  # empty, whitespace-led or truncated
+        value, end = _scan_json(text, 0)
+    except StopIteration:  # empty, whitespace-led or truncated
+        return json.loads(text)
+
+    return value if end == len(text) else json.loads(text)  # trailing data or whitespace
 
 
 _PRIMITIVE_READERS: dict[str, Callable[[_Reader], Any]] = {
@@ -934,9 +936,11 @@ def _codegen_kind(ch_type: str, server_tz: str | None, depth: int = 0) -> tuple[
     if unwrapped == "String":
         return "string", None
 
+    if unwrapped == "JSON":
+        return "json", None
+
     # Everything else is read by its closure, in place, so one uncovered column no longer costs
-    # the row the compiled path. `JSON` stays here on purpose: `json.loads` is over 90% of its
-    # decode, so compiling the walk around it measured no faster.
+    # the row the compiled path.
     return "reader", None
 
 
@@ -997,6 +1001,26 @@ def _emit_array_string(slot: str, indent: str, short: str) -> list[str]:
     ]
 
 
+def _emit_json(slot: str, indent: str, short: str) -> list[str]:
+    """Scanned in place; `_jn` short of the end means a second value, which only `loads` rejects."""
+    return [
+        *_emit_string(slot, indent, short),
+        f"{indent}try:",
+        f"{indent}    _jv, _jn = _scan(v{slot}, 0)",
+        f"{indent}except StopIteration:",
+        f"{indent}    _jn = -1",
+        f"{indent}v{slot} = _jv if _jn == len(v{slot}) else _loads(v{slot})",
+    ]
+
+
+# The emitters needing nothing but a slot; the rest also register something in the namespace.
+_SIMPLE_EMITTERS: dict[str, Callable[[str, str, str], list[str]]] = {
+    "string": _emit_string,
+    "json": _emit_json,
+    "array_string": _emit_array_string,
+}
+
+
 def _emit_reader(slot: str, indent: str, short: str) -> list[str]:
     """Read one column through its closure, handing it the cursor and taking it back.
 
@@ -1039,6 +1063,8 @@ class _Emitter:
             "_strings": _read_string_array,
             "_Reader": _BinaryReader,
             "_Short": _ShortData,
+            "_scan": _scan_json,
+            "_loads": json.loads,
         }
         # Slot -> the type whose converter it needs. Kept as types rather than converters: those
         # memoize per query, and the compiled decoder is cached for the life of the process.
@@ -1095,15 +1121,13 @@ class _Emitter:
         return _emit_fixed_run(run, codes, self.converted, indent, short), index
 
     def _emit_scalar(self, slot: str, kind: tuple[str, Any], ch_type: str, indent: str, short: str) -> list[str]:
-        if kind[0] == "string":
-            return _emit_string(slot, indent, short)
+        simple = _SIMPLE_EMITTERS.get(kind[0])
+        if simple is not None:
+            return simple(slot, indent, short)
 
         if kind[0] == "reader":
             self.namespace[f"_f{slot}"] = _reader_for_type(ch_type, self._server_tz)
             return _emit_reader(slot, indent, short)
-
-        if kind[0] == "array_string":
-            return _emit_array_string(slot, indent, short)
 
         if kind[0] == "array_fixed":
             self._register_converter(slot, ch_type)

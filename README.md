@@ -493,9 +493,8 @@ Versions: `aiochlite` 1.7.0, `clickhouse-connect` 1.7.1, `aiochclient` 2.7.0, Py
 and ClickHouse 26.3.17.110.
 
 aiochlite decodes all three schemas through a loop compiled for them, as it does for every scalar,
-`Nullable`, `Array`, `Tuple` and `Map`, nested up to four levels deep. A column outside that —
-`JSON`, or nesting deeper still — reads through its own closure instead, and that column is as fast
-as it was before.
+`Nullable`, `Array`, `Tuple`, `Map` and `JSON`, nested up to four levels deep. A column nested
+deeper still reads through its own closure instead, and that column is as fast as it was before.
 
 `clickhouse-connect` includes compiled C extensions. `aiochlite` is pure Python with a single
 dependency, `aiohttp`: it matches that C parser on flat columns, and trails it by 31% on nested

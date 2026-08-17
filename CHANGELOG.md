@@ -38,13 +38,13 @@
   whole to the reader: `Array(Nullable(...))`, `Array(Array(...))`, `Array(Tuple(...))`,
   `Array(Map(...))`, and `Tuple` or `Map` with any of those inside. On 100k rows of
   `UInt64, Array(Array(UInt8)), Map(String, Array(UInt8)), Array(Nullable(UInt64))`: 2.1x
-  end to end. Nesting deeper than four levels, and `JSON`, keep the reader path; a `JSON` column is
-  mostly the parse itself and gains nothing from compiling the walk around it.
-- A `JSON` column now goes straight to the scanner `json.loads` reaches internally, skipping the
-  argument checks and whitespace scan it wraps that scanner in — neither of which a length-delimited
-  field can need, holding exactly one value with nothing around it. They were 40% of the column's
-  decode: 100k rows take 50 ms against 88 ms, and the whole fetch 188 ms against 226 ms. Values and
-  errors are unchanged, down to the exception a malformed document raises.
+  end to end. Only nesting deeper than four levels keeps the reader path.
+- A `JSON` column now decodes inside the compiled loop, and goes straight to the scanner
+  `json.loads` reaches internally rather than through the argument checks it wraps that scanner in.
+  Where `loads` rescans for anything following the value, the decoder compares the offset the
+  scanner stopped at, so a document with a second value after the first still raises. On 100k rows
+  of `UInt64, JSON` the fetch takes 173 ms against 226 ms. `JSON` inside an `Array`, `Tuple` or
+  `Map` is compiled along with it. Values and errors are unchanged.
 - `UUID`, `IPv6`, `FixedString` and `Decimal` past 64 bits now count as fixed-width wherever the
   two paths above look for one, having previously been read one column at a time. They travel as
   raw bytes through a `Ns` struct code and are widened by their converter. On 200k rows of

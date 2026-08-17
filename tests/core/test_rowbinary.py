@@ -489,12 +489,20 @@ JSON_DOCUMENTS = [
     '{"v": "\\ud800"}',
     '{"a":' * 200 + "1" + "}" * 200,
     '  {"led": "by whitespace"}',
+    '{"a": 1}   ',
+    # The scanner counts characters where the field prefix counts bytes.
+    '{"ключ": "значение", "emoji": "🙂"}',
 ]
 
 
+@pytest.mark.parametrize("compiled", [True, False])
 @pytest.mark.parametrize("document", JSON_DOCUMENTS)
-def test_json_column_decodes_as_the_standard_library_would(document: str):
+def test_json_column_decodes_as_the_standard_library_would(
+    document: str, compiled: bool, monkeypatch: pytest.MonkeyPatch
+):
     """The decoder reaches the C scanner directly, skipping what `loads` checks around it."""
+    if not compiled:
+        monkeypatch.setattr(rowbinary, "_compiled_row_decoder", lambda *_, **__: None)
     parts = [_encode_varuint(1), _encode_string("doc"), _encode_string("JSON"), _encode_string(document)]
 
     _names, _types, rows = parse_rowbinary_with_names_and_types(b"".join(parts))
@@ -502,9 +510,28 @@ def test_json_column_decodes_as_the_standard_library_would(document: str):
     assert [row[0] for row in rows] == [json.loads(document)]
 
 
-@pytest.mark.parametrize("document", ["", "{oops}", '{"a": ', "  "])
-def test_a_malformed_json_column_raises_what_the_standard_library_raises(document: str):
-    """The scanner signals these by StopIteration, which must not reach the caller."""
+MALFORMED_JSON = [
+    "",
+    "{oops}",
+    '{"a": ',
+    "  ",
+    # A value the scanner reads happily, followed by one it never looks at.
+    "1 2",
+    "{}x",
+    "truefalse",
+    "[1]garbage",
+    '{"a": 1} {"b": 2}',
+]
+
+
+@pytest.mark.parametrize("compiled", [True, False])
+@pytest.mark.parametrize("document", MALFORMED_JSON)
+def test_a_malformed_json_column_raises_what_the_standard_library_raises(
+    document: str, compiled: bool, monkeypatch: pytest.MonkeyPatch
+):
+    """Neither a document the scanner cannot start on nor one it stops short of may be accepted."""
+    if not compiled:
+        monkeypatch.setattr(rowbinary, "_compiled_row_decoder", lambda *_, **__: None)
     parts = [_encode_varuint(1), _encode_string("doc"), _encode_string("JSON"), _encode_string(document)]
 
     with pytest.raises(json.JSONDecodeError):
@@ -1027,6 +1054,10 @@ CODEGEN_SCHEMAS = [
     ["Map(String, Nullable(UInt8))"],
     ["Map(String, Array(UInt8))", "Nullable(String)"],
     ["Map(String, Map(String, UInt8))"],
+    ["JSON"],
+    ["Array(JSON)"],
+    ["Map(String, JSON)", "UInt64"],
+    ["Tuple(JSON, UInt8)"],
 ]
 
 # Empty, one byte, exactly at and either side of the single-byte varint limit, and multi-byte.
@@ -1108,6 +1139,12 @@ def _codegen_payload(types: list[str], rows: int) -> bytes:
             _encode_varuint(i % 3) + b"".join(_encode_string(f"k{j}") + _datetime_utc(i + j) for j in range(i % 3))
         ),
         "JSON": lambda i: _encode_string(f'{{"a": {i}, "b": "x{i % 7}"}}'),
+        "Array(JSON)": lambda i: _array(i, lambda j: _encode_string(f'{{"n": {j}}}')),
+        "Map(String, JSON)": lambda i: (
+            _encode_varuint(i % 3)
+            + b"".join(_encode_string(f"k{j}") + _encode_string(f'{{"n": {j}}}') for j in range(i % 3))
+        ),
+        "Tuple(JSON, UInt8)": lambda i: _encode_string(f'{{"t": {i}}}') + bytes([i % 256]),
         "Array(Array(UInt8))": lambda i: (
             _encode_varuint(i % 3) + b"".join(_encode_varuint(j) + bytes(range(j)) for j in range(i % 3))
         ),
@@ -1170,13 +1207,13 @@ def test_compiled_decoder_rejects_a_truncated_row(cut: int):
         list(parse_rowbinary_with_names_and_types(payload[:-cut])[2])
 
 
+# Past `_MAX_CODEGEN_DEPTH`, where each further level would multiply the code emitted. Nothing else
+# the reader supports is left to it.
 UNCOVERED_TYPES = [
-    "JSON",
-    "Array(JSON)",
-    "Map(String, JSON)",
-    # Past `_MAX_CODEGEN_DEPTH`, where each further level would multiply the code emitted.
     "Array(Array(Array(Array(Array(UInt8)))))",
+    "Array(Array(Array(Array(Array(String)))))",
     "Map(String, Array(Array(Array(Array(UInt8)))))",
+    "Tuple(String, Array(Array(Array(Array(UInt8)))))",
 ]
 
 
