@@ -811,8 +811,9 @@ def test_streaming_batches_a_row_of_fixed_and_string_columns():
 def test_streaming_keeps_the_reader_path_when_no_column_is_covered():
     parts = [
         _encode_varuint(1),
-        _encode_string("pair"),
-        _encode_string("Tuple(String, UInt8)"),
+        _encode_string("tags"),
+        _encode_string("Map(String, UInt8)"),
+        _encode_varuint(1),
         _encode_string("hi"),
         (5).to_bytes(1, "little"),
     ]
@@ -827,7 +828,7 @@ def test_streaming_keeps_the_reader_path_when_no_column_is_covered():
         assert parser._batch is None
         return [row async for row in parser.rows()]
 
-    assert asyncio.run(_run()) == [[("hi", 5)]]
+    assert asyncio.run(_run()) == [[{"hi": 5}]]
 
 
 def test_value_cache_converts_once_per_distinct_value():
@@ -891,6 +892,9 @@ CODEGEN_SCHEMAS = [
     ["String", "JSON", "UInt64"],
     ["UInt64", "Array(Array(UInt8))", "Nullable(String)"],
     ["Tuple(String, UInt8)", "Map(String, UInt8)", "UInt64"],
+    ["Tuple(String, UInt8)"],
+    ["Tuple(UInt64, UInt64)", "String"],
+    ["UInt64", "Tuple(String, DateTime('UTC'))", "Array(UInt64)"],
 ]
 
 # Empty, one byte, exactly at and either side of the single-byte varint limit, and multi-byte.
@@ -960,6 +964,8 @@ def _codegen_payload(types: list[str], rows: int) -> bytes:
         "Array(UUID)": lambda i: _array(i, _uuid),
         "Array(Decimal64(2))": lambda i: _array(i, _decimal64),
         "Tuple(String, UInt8)": lambda i: _string(i) + bytes([i % 256]),
+        "Tuple(UInt64, UInt64)": lambda i: _uint64(i) + _uint64(i + 1),
+        "Tuple(String, DateTime('UTC'))": lambda i: _string(i) + _datetime_utc(i),
         "Map(String, UInt8)": lambda i: (
             _encode_varuint(i % 3) + b"".join(_encode_string(f"k{j}") + bytes([j]) for j in range(i % 3))
         ),
@@ -999,10 +1005,10 @@ def test_compiled_decoder_rejects_a_truncated_row(cut: int):
 
 UNCOVERED_TYPES = [
     "Map(String, UInt8)",
-    "Tuple(String, UInt8)",
     "JSON",
     "Array(Array(UInt8))",
     "Array(Nullable(UInt8))",
+    "Tuple(String, Array(UInt8))",
 ]
 
 
@@ -1027,8 +1033,9 @@ def test_compiled_cache_holds_no_converters():
     compiled = rowbinary._compiled_row_decoder(("DateTime('UTC')", "String"), "UTC", as_tuple=True)
 
     assert compiled is not None
-    _code, schema_globals, converted = compiled
-    assert converted == (0,)
+    _code, schema_globals, converters = compiled
+    # The slot's type is kept, so the converter itself can be rebuilt per query.
+    assert converters == (("0", "DateTime('UTC')"),)
     assert not [name for name in schema_globals if name.startswith("_c")]
 
 

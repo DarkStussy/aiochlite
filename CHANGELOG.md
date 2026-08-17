@@ -20,7 +20,7 @@
 - A row now decodes through a loop compiled for its schema, rather than a reader call per column
   per row. On 200k rows: 3.4x on `UInt64, Float64, String`, 3.6x on
   `UInt64, Nullable(String), Nullable(DateTime)`, 2.1x-2.9x streaming. Fixed-width, `String`,
-  `Nullable` and `Array` columns are emitted inline; a column of any other type reads through its
+  `Nullable`, `Array` and `Tuple` columns are emitted inline; a column of any other type reads through its
   own closure inside the same loop, so one such column no longer costs the whole row the compiled
   path. A row whose every column needs a closure is left to the reader path. The compiled code is
   cached per schema; the converters it uses are not, so their per-query caches are still released

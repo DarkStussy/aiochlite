@@ -848,25 +848,53 @@ def _codegen_value_type(ch_type: str) -> str:
     return unwrapped
 
 
-# Columns the generator can emit inline. Everything else keeps the reader path.
+def _codegen_nullable_kind(inner_type: str, server_tz: str | None) -> tuple[str, Any]:
+    inner = _codegen_kind(inner_type, server_tz)
+    # Only what `_emit_nullable` can nest. ClickHouse rejects `Nullable(Array(...))` anyway, but
+    # an unhandled kind here would silently emit a decoder for the wrong shape.
+    return ("nullable", inner) if inner is not None and inner[0] in {"fixed", "string"} else ("reader", None)
+
+
+def _codegen_array_kind(element_type: str, server_tz: str | None) -> tuple[str, Any]:
+    element = _strip_low_cardinality(element_type)
+    if element == "String":
+        return "array_string", None
+
+    # Only a flat array of a fixed-width type: anything deeper would need the generator to nest,
+    # and the reader path handles it well enough.
+    field = _fixed_field(element, server_tz)
+    return ("array_fixed", field[0]) if field is not None else ("reader", None)
+
+
+def _codegen_tuple_kind(element_types: str, server_tz: str | None) -> tuple[str, Any]:
+    elements: list[tuple[str, str, Any]] = []
+    for element in split_type_arguments(element_types):
+        kind = _codegen_kind(element, server_tz)
+        # Only flat elements, for the same reason as arrays.
+        if kind is None or kind[0] not in {"fixed", "string"}:
+            return "reader", None
+
+        elements.append((element, kind[0], kind[1]))
+
+    return ("tuple", elements) if elements else ("reader", None)
+
+
+_CODEGEN_CONTAINERS: dict[str, Callable[[str, str | None], tuple[str, Any]]] = {
+    "Nullable(": _codegen_nullable_kind,
+    "Array(": _codegen_array_kind,
+    "Tuple(": _codegen_tuple_kind,
+}
+
+
 def _codegen_kind(ch_type: str, server_tz: str | None) -> tuple[str, Any] | None:
-    """`("fixed", code)`, `("string", None)`, `("nullable", inner)`, or None if it needs a reader."""
+    """How the generator emits this column: `("fixed", code)`, `("string", None)`, `("nullable",
+    inner)`, `("array_fixed", code)`, `("array_string", None)`, `("tuple", elements)`, or
+    `("reader", None)` for a column read through its own closure."""
     unwrapped = _strip_low_cardinality(ch_type)
-    if unwrapped.startswith("Nullable(") and unwrapped.endswith(")"):
-        inner = _codegen_kind(unwrapped[9:-1], server_tz)
-        # Only what `_emit_nullable` can nest. ClickHouse rejects `Nullable(Array(...))` anyway,
-        # but an unhandled kind here would silently emit a decoder for the wrong shape.
-        return ("nullable", inner) if inner is not None and inner[0] in {"fixed", "string"} else ("reader", None)
 
-    if unwrapped.startswith("Array(") and unwrapped.endswith(")"):
-        element = _strip_low_cardinality(unwrapped[6:-1])
-        if element == "String":
-            return "array_string", None
-
-        # Only a flat array of a fixed-width type: anything deeper would need the generator to
-        # nest, and the reader path handles it well enough.
-        field = _fixed_field(element, server_tz)
-        return ("array_fixed", field[0]) if field is not None else ("reader", None)
+    for prefix, build in _CODEGEN_CONTAINERS.items():
+        if unwrapped.startswith(prefix) and unwrapped.endswith(")"):
+            return build(unwrapped[len(prefix) : -1], server_tz)
 
     field = _fixed_field(unwrapped, server_tz)
     if field is not None:
@@ -881,16 +909,16 @@ def _codegen_kind(ch_type: str, server_tz: str | None) -> tuple[str, Any] | None
     return "reader", None
 
 
-def _emit_fixed_run(columns: list[int], codes: str, converted: set[int], indent: str) -> list[str]:
+def _emit_fixed_run(slots: list[str], codes: str, converted: set[str], indent: str) -> list[str]:
     unpacker = struct.Struct(f"<{codes}")
-    targets = ", ".join(f"v{column}" for column in columns)
+    targets = ", ".join(f"v{slot}" for slot in slots)
     lines = [
         f"{indent}_e = p + {unpacker.size}",
         f"{indent}if _e > end: break",
-        f"{indent}{targets}{',' if len(columns) == 1 else ''} = _s{columns[0]}(data, p)",
+        f"{indent}{targets}{',' if len(slots) == 1 else ''} = _s{slots[0]}(data, p)",
         f"{indent}p = _e",
     ]
-    lines += [f"{indent}v{column} = _c{column}(v{column})" for column in columns if column in converted]
+    lines += [f"{indent}v{slot} = _c{slot}(v{slot})" for slot in slots if slot in converted]
     return lines
 
 
@@ -907,39 +935,38 @@ def _emit_varuint(indent: str) -> list[str]:
     ]
 
 
-def _emit_string(column: int, indent: str) -> list[str]:
+def _emit_string(slot: str, indent: str) -> list[str]:
     return [
         *_emit_varuint(indent),
         f"{indent}_e = p + _l",
         f"{indent}if _e > end: break",
-        f"{indent}v{column} = data[p:_e].decode()",
+        f"{indent}v{slot} = data[p:_e].decode()",
         f"{indent}p = _e",
     ]
 
 
-def _emit_array_fixed(column: int, code: str, converted: set[int], indent: str) -> list[str]:
+def _emit_array_fixed(slot: str, code: str, converted: set[str], indent: str) -> list[str]:
     size = struct.calcsize(f"<{code}")
-    elements = f"_u{column}[_l](data, p)"
+    elements = f"_u{slot}[_l](data, p)"
     return [
         *_emit_varuint(indent),
         f"{indent}_e = p + _l * {size}",
         f"{indent}if _e > end: break",
         # One struct call for the whole array, where the reader path costs one per element.
-        f"{indent}v{column} = "
-        + (f"[_c{column}(_x) for _x in {elements}]" if column in converted else f"list({elements})"),
+        f"{indent}v{slot} = " + (f"[_c{slot}(_x) for _x in {elements}]" if slot in converted else f"list({elements})"),
         f"{indent}p = _e",
     ]
 
 
-def _emit_array_string(column: int, indent: str) -> list[str]:
+def _emit_array_string(slot: str, indent: str) -> list[str]:
     return [
         *_emit_varuint(indent),
-        f"{indent}v{column}, p = _strings(data, p, _l, end)",
-        f"{indent}if v{column} is None: break",
+        f"{indent}v{slot}, p = _strings(data, p, _l, end)",
+        f"{indent}if v{slot} is None: break",
     ]
 
 
-def _emit_reader(column: int, indent: str) -> list[str]:
+def _emit_reader(slot: str, indent: str) -> list[str]:
     """Read one column through its closure, handing it the cursor and taking it back.
 
     `_pos` rather than the property: the generated code is part of this module, and the property
@@ -948,73 +975,120 @@ def _emit_reader(column: int, indent: str) -> list[str]:
     return [
         f"{indent}_r._pos = p",
         f"{indent}try:",
-        f"{indent}    v{column} = _f{column}(_r)",
+        f"{indent}    v{slot} = _f{slot}(_r)",
         f"{indent}except _Short: break",
         f"{indent}p = _r._pos",
     ]
 
 
-def _emit_nullable(column: int, inner: tuple[str, Any], converted: set[int], indent: str) -> list[str]:
+def _emit_nullable(slot: str, inner: tuple[str, Any], converted: set[str], indent: str) -> list[str]:
     # A `break` inside the else still leaves the row loop, so a short value is reported as one.
     lines = [
         f"{indent}if p >= end: break",
         f"{indent}_n = data[p]",
         f"{indent}p += 1",
         f"{indent}if _n:",
-        f"{indent}    v{column} = None",
+        f"{indent}    v{slot} = None",
         f"{indent}else:",
     ]
     nested = f"{indent}    "
     if inner[0] == "string":
-        return lines + _emit_string(column, nested)
+        return lines + _emit_string(slot, nested)
 
     assert inner[0] == "fixed", inner[0]
-    return lines + _emit_fixed_run([column], inner[1], converted, nested)
+    return lines + _emit_fixed_run([slot], inner[1], converted, nested)
 
 
-def _emit_column(
-    column: int,
-    kinds: list[tuple[str, Any] | None],
-    types: tuple[str, ...],
-    server_tz: str | None,
-    converted: set[int],
-    namespace: dict[str, Any],
-) -> tuple[list[str], int]:
-    """Lines decoding the column at `column`, and the index of the one after it."""
-    kind = kinds[column]
-    assert kind is not None
-    indent = "        "
+class _Emitter:
+    """Builds the body of one compiled decoder, collecting what its globals need along the way."""
 
-    if kind[0] == "string":
-        return _emit_string(column, indent), column + 1
+    __slots__ = ("_server_tz", "converted", "converters", "namespace")
 
-    if kind[0] == "reader":
-        namespace[f"_f{column}"] = _reader_for_type(types[column], server_tz)
-        return _emit_reader(column, indent), column + 1
+    def __init__(self, server_tz: str | None):
+        self._server_tz = server_tz
+        self.namespace: dict[str, Any] = {
+            "_varint": _read_varint,
+            "_strings": _read_string_array,
+            "_Reader": _BinaryReader,
+            "_Short": _ShortData,
+        }
+        # Slot -> the type whose converter it needs. Kept as types rather than converters: those
+        # memoize per query, and the compiled decoder is cached for the life of the process.
+        self.converters: dict[str, str] = {}
+        self.converted: set[str] = set()
 
-    if kind[0] == "array_string":
-        return _emit_array_string(column, indent), column + 1
+    def _register_converter(self, slot: str, ch_type: str):
+        field = _fixed_field(_codegen_value_type(ch_type), self._server_tz)
+        if field is not None and field[1] is not None:
+            self.converters[slot] = ch_type
+            self.converted.add(slot)
 
-    if kind[0] == "array_fixed":
-        namespace[f"_u{column}"] = _ArrayUnpackers(kind[1])
-        return _emit_array_fixed(column, kind[1], converted, indent), column + 1
+    def emit(self, slots: list[str], types: Sequence[str], kinds: list[tuple[str, Any]], indent: str) -> list[str]:
+        """Lines decoding `types` back to back, one slot each."""
+        body: list[str] = []
+        index = 0
+        while index < len(kinds):
+            lines, index = self._emit_one(index, slots, types, kinds, indent)
+            body += lines
 
-    if kind[0] == "nullable":
-        # The null flag makes the width vary, so the column cannot join a run.
-        if kind[1][0] == "fixed":
-            namespace[f"_s{column}"] = struct.Struct(f"<{kind[1][1]}").unpack_from
-        return _emit_nullable(column, kind[1], converted, indent), column + 1
+        return body
 
-    # Consecutive fixed-width columns share one struct call, as in the bulk path.
-    run: list[int] = []
-    codes = ""
-    while column < len(kinds) and (entry := kinds[column]) is not None and entry[0] == "fixed":
-        run.append(column)
-        codes += entry[1] or ""
-        column += 1
+    def _emit_one(
+        self,
+        index: int,
+        slots: list[str],
+        types: Sequence[str],
+        kinds: list[tuple[str, Any]],
+        indent: str,
+    ) -> tuple[list[str], int]:
+        if kinds[index][0] != "fixed":
+            self._register_converter(slots[index], types[index])
+            return self._emit_scalar(slots[index], kinds[index], types[index], indent), index + 1
 
-    namespace[f"_s{run[0]}"] = struct.Struct(f"<{codes}").unpack_from
-    return _emit_fixed_run(run, codes, converted, indent), column
+        # Consecutive fixed-width columns share one struct call, as in the bulk path.
+        run: list[str] = []
+        codes = ""
+        while index < len(kinds) and kinds[index][0] == "fixed":
+            self._register_converter(slots[index], types[index])
+            run.append(slots[index])
+            codes += kinds[index][1]
+            index += 1
+
+        self.namespace[f"_s{run[0]}"] = struct.Struct(f"<{codes}").unpack_from
+        return _emit_fixed_run(run, codes, self.converted, indent), index
+
+    def _emit_scalar(self, slot: str, kind: tuple[str, Any], ch_type: str, indent: str) -> list[str]:
+        if kind[0] == "string":
+            return _emit_string(slot, indent)
+
+        if kind[0] == "reader":
+            self.namespace[f"_f{slot}"] = _reader_for_type(ch_type, self._server_tz)
+            return _emit_reader(slot, indent)
+
+        if kind[0] == "array_string":
+            return _emit_array_string(slot, indent)
+
+        if kind[0] == "array_fixed":
+            self.namespace[f"_u{slot}"] = _ArrayUnpackers(kind[1])
+            return _emit_array_fixed(slot, kind[1], self.converted, indent)
+
+        if kind[0] == "nullable":
+            # The null flag makes the width vary, so the column cannot join a run.
+            if kind[1][0] == "fixed":
+                self.namespace[f"_s{slot}"] = struct.Struct(f"<{kind[1][1]}").unpack_from
+            return _emit_nullable(slot, kind[1], self.converted, indent)
+
+        assert kind[0] == "tuple", kind[0]
+        return self._emit_tuple(slot, kind[1], indent)
+
+    def _emit_tuple(self, slot: str, elements: list[tuple[str, str, Any]], indent: str) -> list[str]:
+        """A tuple carries no count, so its elements are just more columns sharing the row."""
+        slots = [f"{slot}_{index}" for index in range(len(elements))]
+        types = [element[0] for element in elements]
+        kinds = [(element[1], element[2]) for element in elements]
+        body = self.emit(slots, types, kinds, indent)
+        body.append(f"{indent}v{slot} = ({', '.join(f'v{name}' for name in slots)},)")
+        return body
 
 
 @lru_cache(maxsize=256)
@@ -1023,7 +1097,7 @@ def _compiled_row_decoder(
     server_tz: str | None,
     *,
     as_tuple: bool,
-) -> tuple[CodeType, dict[str, Any], tuple[int, ...]] | None:
+) -> tuple[CodeType, dict[str, Any], tuple[tuple[str, str], ...]] | None:
     """Code and schema-derived globals for a decoder over `types`, or None if unsupported.
 
     The converters are left out: they memoize per query, so caching them here would keep every
@@ -1038,28 +1112,14 @@ def _compiled_row_decoder(
     if all(kind is not None and kind[0] == "reader" for kind in kinds):
         return None
 
-    converted = {
-        column
-        for column, ch_type in enumerate(types)
-        if (_fixed_field(_codegen_value_type(ch_type), server_tz) or (None, None))[1]
-    }
-    namespace: dict[str, Any] = {
-        "_varint": _read_varint,
-        "_strings": _read_string_array,
-        "_Reader": _BinaryReader,
-        "_Short": _ShortData,
-    }
-    body: list[str] = []
-    column = 0
+    emitter = _Emitter(server_tz)
+    slots = [str(column) for column in range(len(types))]
+    body = emitter.emit(slots, types, [kind for kind in kinds if kind is not None], "        ")
 
-    while column < len(kinds):
-        lines, column = _emit_column(column, kinds, types, server_tz, converted, namespace)
-        body += lines
-
-    values = ", ".join(f"v{column}" for column in range(len(kinds)))
+    values = ", ".join(f"v{slot}" for slot in slots)
     # Held for the whole call, so its view of the payload is released before the caller can feed
     # the buffer again and resize it.
-    reader = ["    _r = _Reader(data)"] if any(kind and kind[0] == "reader" for kind in kinds) else []
+    reader = ["    _r = _Reader(data)"] if any(name.startswith("_f") for name in emitter.namespace) else []
     source = "\n".join(
         [
             "def _decode(data, pos, end):",
@@ -1077,7 +1137,8 @@ def _compiled_row_decoder(
         ]
     )
 
-    return compile(source, f"<rowbinary:{','.join(types)}>", "exec"), namespace, tuple(sorted(converted))
+    code = compile(source, f"<rowbinary:{','.join(types)}>", "exec")
+    return code, emitter.namespace, tuple(emitter.converters.items())
 
 
 def _row_decoder(
@@ -1086,17 +1147,17 @@ def _row_decoder(
     *,
     as_tuple: bool,
 ) -> Callable[[bytes, int, int], tuple[list[Any], int]] | None:
-    """Decoder specialized to this schema, or None if a column needs the reader path."""
+    """Decoder specialized to this schema, or None if every column needs the reader path."""
     compiled = _compiled_row_decoder(tuple(types), server_tz, as_tuple=as_tuple)
     if compiled is None:
         return None
 
-    code, schema_globals, converted = compiled
+    code, schema_globals, converters = compiled
     namespace = dict(schema_globals)
-    for column in converted:
-        field = _fixed_field(_codegen_value_type(types[column]), server_tz)
+    for slot, ch_type in converters:
+        field = _fixed_field(_codegen_value_type(ch_type), server_tz)
         assert field is not None
-        namespace[f"_c{column}"] = field[1]
+        namespace[f"_c{slot}"] = field[1]
 
     exec(code, namespace)  # noqa: S102
     return namespace["_decode"]
