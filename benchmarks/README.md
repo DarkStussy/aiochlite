@@ -1,32 +1,24 @@
 # Benchmarks
 
-This directory contains benchmark scripts for `aiochlite`:
+Three scripts, from the widest measurement to the narrowest:
 
-- `fetch_rows.py` — end-to-end fetch + decode, compared against other clients.
-- `converter_cache.py` — decoding only, measuring both sides of the value-cache trade.
+- `fetch_rows.py` — end-to-end fetch + decode, against other clients.
+- `decode_paths.py` — decoding alone: one reader call per column against the path a query takes now.
+- `converter_cache.py` — one part of decoding: both sides of the value-cache trade.
 
 > [!NOTE]
-> Benchmarks always depend on machine and environment (CPU, RAM, kernel, ClickHouse version/config, network, etc).
-> The sample output was captured on a local machine with 8 CPU cores (16 threads) and 32 GB RAM. ClickHouse
-> 26.3 LTS ran on the same host. Use the results to compare clients within this run; absolute timings will vary
-> on other systems.
+> The sample output was captured on a local machine with 8 CPU cores (16 threads) and 32 GB RAM, with ClickHouse
+> 26.3 LTS on the same host. Compare the numbers within a run; absolute timings vary with CPU, kernel, server
+> version and network.
 
 ## Methodology
 
-- Each client uses the configuration recommended by its documentation. In particular, install `aiochclient` with
-  the `aiohttp-speedups` extra. Without it, date parsing uses a pure-Python fallback and the benchmark is roughly
-  four times slower, resulting in a misleading comparison.
-- Competitor packages are intentionally excluded from `pyproject.toml`. Install them separately:
-
-  ```bash
-  uv pip install "aiochclient[aiohttp-speedups]" clickhouse-connect
-  ```
-
-  Run the script directly with `.venv/bin/python`. Using `uv run` re-syncs the environment from `uv.lock` and
-  removes packages that are not declared there.
-- The output header records the client, Python and ClickHouse versions, so a published result can be traced back
-  to what produced it.
-- When refreshing the results, update the measurement date and version line in this file, then update the root
+- Every script prints a header with the versions it ran against, so a published result can be traced to what
+  produced it.
+- `gc` is off around every timed region.
+- `fetch_rows.py` times the whole request and reports every round plus their average. The other two fetch the
+  payload before any timing starts, so only decoding is measured, and report medians next to the raw series.
+- When refreshing the results, update the measurement date in this file, then update the root
   [README.md](../README.md) as well.
 
 ## IO benchmark: fetch + decode
@@ -40,13 +32,22 @@ What it measures:
   - `flat columns`: `UInt64, DateTime('UTC'), Tuple(String, UInt16), Array(Decimal(10, 2))`
   - `wide strings`: `UInt64` and nine `String` columns
   - `nested containers`: `UInt64, Array(Array(UInt8)), Map(String, Array(UInt8)), Array(Nullable(UInt64))`
-- Compares:
-  - `aiochlite (Row)`: `AsyncChClient.fetch()` (returns `Row`), in the client's default decode mode.
-  - `aiochlite (tuples)`: `AsyncChClient.fetch_rows()` (returns raw tuples)
+- Compares four clients, each in the configuration its own documentation recommends:
+  - `aiochlite (Row)` — `AsyncChClient.fetch()`, in the client's default decode mode
+  - `aiochlite (tuples)` — `AsyncChClient.fetch_rows()`, raw tuples
   - `clickhouse-connect (async)`
   - `aiochclient`
 
-Run:
+Competitor packages are deliberately absent from `pyproject.toml`. Install them separately, and give
+`aiochclient` the `aiohttp-speedups` extra — without it date parsing falls back to pure Python and that client
+runs roughly four times slower:
+
+```bash
+uv pip install "aiochclient[aiohttp-speedups]" clickhouse-connect
+```
+
+Run the script with `.venv/bin/python`, not `uv run`: `uv run` re-syncs the environment from `uv.lock` and
+removes anything not declared there, competitors included.
 
 ```bash
 .venv/bin/python benchmarks/fetch_rows.py
@@ -197,11 +198,105 @@ Python loop costs against a C parser, and it widens as the share of per-value wo
 of the three, because a `String` column is a length plus bytes per row with nothing to batch, where the flat
 schema's fixed-width columns go through one `struct` call.
 
-Compression closes little of it — 2.18x to 2.05x on a fetch of the wide-string schema with no downstream work —
-so what separates the two is decoding, not transport.
+Compression barely moves it: with `enable_compression=True` the wide-string ratio went from 2.18x to 2.05x. That
+one was measured separately, on a fetch with no downstream work, and is not part of the output above. What
+separates the two clients is decoding, not transport.
 
 The gap to `aiochlite (Row)` is the `Row` wrapper itself, one object per row, and it grows with column count:
 18%-20% on the four-column schemas, 43% on the ten-column one.
+
+## Decoder benchmark: per-field reads vs the current path
+
+Script: `benchmarks/decode_paths.py`
+
+What it measures:
+- Row decoding alone. The payload is fetched once before any timing, so only bytes already in memory are
+  decoded.
+- The slow side keeps one reader call per column per row — what a schema falls back to when nothing in it can
+  be emitted inline. The fast side is whatever `parse_rowbinary_with_names_and_types` picks for the same types:
+  one `struct` pass over the whole body for a row that is fixed-width end to end, otherwise a loop compiled for
+  the schema.
+- Three schemas, chosen so the converters land differently: fixed-width end to end with one `DateTime`, a mixed
+  row with a `String` in the middle, and a wide numeric row with no converter at all.
+- A sweep of row width at parity: N consecutive `UInt64` columns for N = 2..10.
+- Both decoders are rebuilt every round with the module caches cleared. Reusing them leaves the converter cache
+  warm from the round before, which reads as a fast decode where a single query would have only misses.
+
+Run:
+
+```bash
+.venv/bin/python benchmarks/decode_paths.py
+```
+
+Same environment variables as above, with different defaults — `BENCH_ROWS=200000`, `BENCH_ROUNDS=7`,
+`BENCH_WARMUP=2` — plus `BENCH_SWEEP_ROWS` (default `100000`) for the width sweep, which runs nine schemas and
+would otherwise stretch the run.
+
+The sample below was taken with `BENCH_ROUNDS=11`; the default 7 gives the same shape with noisier medians on
+the sweep.
+
+### Sample output
+
+Measured 2026-08-18.
+
+```
+aiochlite 1.7.0 @ 31e76b0
+CPU: AMD Ryzen 7 9800X3D 8-Core Processor
+OS: Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39
+Python: 3.14.5 (CPython)
+Rows: 200000, rounds: 11, warmup: 2
+Sweep rows: 100000
+ClickHouse: 26.3.17.110
+
+Fully fixed-width row (5 columns) — one struct pass over the body
+  Per field: median  199.18 ms  [201.13, 197.41, 199.18, 205.69, 204.07, 196.38, 198.24, 201.29, 230.62, 198.12, 196.43]
+  Current:   median  108.28 ms  [115.65, 109.74, 108.21, 107.16, 108.28, 109.36, 111.11, 112.32, 106.72, 107.72, 107.72]
+  Speedup:   1.84x
+
+Mixed row, one run of 3 (5 columns) — loop compiled for the schema
+  Per field: median  231.60 ms  [236.79, 231.41, 233.01, 230.09, 234.50, 243.80, 246.04, 230.12, 231.60, 225.72, 225.65]
+  Current:   median  133.23 ms  [133.23, 135.97, 132.00, 129.74, 131.77, 134.19, 134.45, 135.75, 135.22, 131.96, 130.56]
+  Speedup:   1.74x
+
+Wide numeric row (10 columns) — one struct pass over the body
+  Per field: median  228.74 ms  [234.32, 228.96, 231.51, 232.84, 228.74, 223.67, 225.58, 229.42, 224.28, 221.58, 220.94]
+  Current:   median   27.67 ms  [28.92, 28.76, 29.77, 28.75, 34.33, 27.67, 26.70, 26.87, 25.99, 26.10, 25.55]
+  Speedup:   8.27x
+
+Row width at parity, 100000 rows of UInt64 columns
+
+2 columns
+  Per field: median   24.74 ms  [24.74, 26.36, 24.38, 24.80, 24.48, 24.84, 24.68, 25.34, 24.48, 33.72, 23.74]
+  Current:   median    3.74 ms  [3.72, 3.86, 3.66, 3.67, 3.74, 3.87, 3.73, 3.78, 3.76, 3.72, 3.90]
+  Speedup:   6.62x
+
+...
+
+10 columns
+  Per field: median  104.17 ms  [110.29, 104.56, 113.02, 103.10, 104.17, 106.26, 106.69, 102.93, 101.24, 101.24, 102.84]
+  Current:   median    8.84 ms  [9.58, 9.44, 8.84, 8.94, 8.34, 9.15, 7.79, 9.00, 8.32, 7.64, 7.77]
+  Speedup:   11.79x
+```
+
+The sweep prints a block per width; the ones between 2 and 10 are cut here for length. Their medians:
+
+| Columns | Per field | Current | Speedup |
+|---:|---:|---:|---:|
+| 3 | 34.62 ms | 4.12 ms | 8.40x |
+| 4 | 42.05 ms | 4.46 ms | 9.43x |
+| 5 | 52.30 ms | 5.23 ms | 10.00x |
+| 6 | 62.61 ms | 5.56 ms | 11.26x |
+| 7 | 72.22 ms | 6.38 ms | 11.33x |
+| 8 | 81.07 ms | 6.91 ms | 11.73x |
+| 9 | 93.18 ms | 7.84 ms | 11.89x |
+
+Reading by field grows about 10 ms per added column, which is what a call chain per cell costs. The current path
+grows about 0.6 ms: `iter_unpack` still builds one Python object per field, and no amount of batching removes
+that. The ratio therefore climbs and then flattens out around 12x rather than tracking column count.
+
+The five-column schemas show why one number is not enough. Fixed-width end to end gives 1.84x, the sweep at the
+same width gives 10.00x — the difference is a single `DateTime`, whose converter stays on both paths and dilutes
+everything else.
 
 ## Converter benchmark: the value cache
 
@@ -209,7 +304,7 @@ Script: `benchmarks/converter_cache.py`
 
 What it measures:
 - Both decoders come from `_row_decoder`, the compiled path a query takes for this schema, so the conversion is
-  measured against the decode that really surrounds it.
+  measured inside the decode that surrounds it in a real query.
 - Fixed-width columns such as `DateTime` and `Decimal` arrive as integers and are turned into Python objects by a
   converter. Converters built per query memoize through `_value_cache`, which holds up to
   `_QUERY_VALUE_CACHE_SIZE` values per column and is released with the query. Converters reached through
@@ -218,14 +313,17 @@ What it measures:
   The uncached variant is built by switching `_value_cache` off while the converters are created, so both readers
   run identical conversion logic; the script checks that the patch took effect and that both decoders agree.
 - Two payloads: one where values repeat heavily, one where every value is distinct.
-- Timing: the agreement check sits outside the timer, the decoders take turns going first, each result is
-  released before the next round, and the medians are printed next to the raw series.
+- The agreement check sits outside the timer, the decoders take turns going first, and each result is released
+  before the next round.
 
 Run:
 
 ```bash
 .venv/bin/python benchmarks/converter_cache.py
 ```
+
+Same environment variables as the script above, minus the sweep: `BENCH_ROWS` defaults to `200000`,
+`BENCH_ROUNDS` to `7`, `BENCH_WARMUP` to `2`.
 
 ### Sample output
 
@@ -273,8 +371,8 @@ Eviction collapses: at 20k distinct values a 4096-entry `lru_cache` is slower th
 missing and every insert evicting. Filling and stopping avoids that, but it keeps whatever it saw first and so
 misses forever once the working set moves — the last two rows, which are what a column in time order looks like.
 Starting over loses only where access is uniformly random over a cardinality just above the bound.
-`_QUERY_VALUE_CACHE_SIZE` takes that last policy. None of these four rows is in the script — they were measured
-by hand, and each is worth a payload of its own in it.
+`_QUERY_VALUE_CACHE_SIZE` takes that last policy. None of these four rows is in the script: they were measured
+by hand, and each still deserves a payload there.
 
 The bound is also what keeps `stream()` flat: there the cache lives as long as the query, while the caller drops
 each row as it goes. Peak traced memory:
