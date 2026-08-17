@@ -3,7 +3,7 @@ import ipaddress
 import struct
 from datetime import date, datetime, timedelta
 from decimal import Decimal
-from typing import Any, Callable
+from typing import Any, AsyncIterator, Callable
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -831,6 +831,59 @@ def test_streaming_keeps_the_reader_path_when_no_column_is_covered():
         return [row async for row in parser.rows()]
 
     assert asyncio.run(_run()) == [[{"hi": [5, 6]}]]
+
+
+def _encode_nested(arrays: list[list[Any]], pack: Callable[[Any], bytes]) -> bytes:
+    return b"".join(
+        [_encode_varuint(len(arrays))]
+        + [_encode_varuint(len(inner)) + b"".join(pack(value) for value in inner) for inner in arrays]
+    )
+
+
+def test_streaming_reader_reads_every_fixed_width_type_across_chunk_splits():
+    """A row of nothing but nested containers, which is the only way to reach these reads.
+
+    The compiled and bulk paths took over every schema the other tests use, leaving
+    `_StreamingReader` to columns the generator emits no code for.
+    """
+    widths = [("UInt8", 1, False), ("Int8", 1, True), ("UInt16", 2, False), ("Int16", 2, True)]
+    widths += [("UInt32", 4, False), ("Int32", 4, True), ("UInt64", 8, False), ("Int64", 8, True)]
+    types = [f"Array(Array({name}))" for name, _size, _signed in widths]
+    types += ["Array(Array(Float32))", "Array(Array(Float64))", "Array(Array(FixedString(3)))"]
+
+    def _pack_int(size: int, signed: bool) -> Callable[[Any], bytes]:
+        return lambda value: int(value).to_bytes(size, "little", signed=signed)
+
+    packers: list[Callable[[Any], bytes]] = [_pack_int(size, signed) for _name, size, signed in widths]
+    packers += [lambda v: struct.pack("<f", v), lambda v: struct.pack("<d", v), str.encode]
+
+    integers: list[list[list[Any]]] = [[[1, 2], [3]], [[-1], []]] * (len(widths) // 2)
+    rows: list[list[Any]] = [
+        [*integers, [[0.5]], [[1.25, -2.5]], [["abc"]]],
+        [[[7]], [[-7]], [[8]], [[-8]], [[9]], [[-9]], [[10]], [[-10]], [[]], [[3.5]], [["xyz", "123"]]],
+    ]
+
+    parts = [_encode_varuint(len(types))]
+    parts += [_encode_string(f"c{index}") for index in range(len(types))]
+    parts += [_encode_string(ch_type) for ch_type in types]
+    parts += [_encode_nested(value, pack) for row in rows for value, pack in zip(row, packers, strict=True)]
+    payload = b"".join(parts)
+
+    assert rowbinary._batch_decoder(types, None) is None
+
+    for size in (1, 5, 17, len(payload)):
+
+        async def _run(size: int = size) -> list[Any]:
+            async def _chunks() -> AsyncIterator[bytes]:
+                for start in range(0, len(payload), size):
+                    yield payload[start : start + size]
+
+            parser = RowBinaryWithNamesAndTypesStreamParser(_chunks())
+            await parser.read_header()
+            assert parser._batch is None
+            return [row async for row in parser.rows()]
+
+        assert asyncio.run(_run()) == rows, f"chunk size {size}"
 
 
 def test_value_cache_converts_once_per_distinct_value():
