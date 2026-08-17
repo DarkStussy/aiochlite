@@ -826,3 +826,24 @@ def test_value_cache_keeps_entries_past_the_bound_of_the_shared_cache():
         cached(value)
 
     assert converted == len(values)
+
+
+@pytest.mark.parametrize(
+    ("method", "size"),
+    [
+        ("read_uint16", 2),
+        ("read_int16", 2),
+        ("read_uint32", 4),
+        ("read_int32", 4),
+        ("read_uint64", 8),
+        ("read_int64", 8),
+        ("read_float32", 4),
+        ("read_float64", 8),
+    ],
+)
+def test_reading_past_the_end_raises_a_decode_error(method: str, size: int):
+    """`struct.error` is no ValueError, so an unchecked read escaped the decode boundary."""
+    reader = rowbinary._BinaryReader(bytes(size - 1))
+
+    with pytest.raises(ValueError, match="Unexpected end of data"):
+        getattr(reader, method)()

@@ -68,31 +68,43 @@ class _BinaryReader:
         return value
 
     def read_uint16(self) -> int:
+        if self._pos + 2 > len(self._data):
+            raise ValueError("Unexpected end of data")
         value = struct.unpack_from("<H", self._data, self._pos)[0]
         self._pos += 2
         return value
 
     def read_int16(self) -> int:
+        if self._pos + 2 > len(self._data):
+            raise ValueError("Unexpected end of data")
         value = struct.unpack_from("<h", self._data, self._pos)[0]
         self._pos += 2
         return value
 
     def read_uint32(self) -> int:
+        if self._pos + 4 > len(self._data):
+            raise ValueError("Unexpected end of data")
         value = struct.unpack_from("<I", self._data, self._pos)[0]
         self._pos += 4
         return value
 
     def read_int32(self) -> int:
+        if self._pos + 4 > len(self._data):
+            raise ValueError("Unexpected end of data")
         value = struct.unpack_from("<i", self._data, self._pos)[0]
         self._pos += 4
         return value
 
     def read_uint64(self) -> int:
+        if self._pos + 8 > len(self._data):
+            raise ValueError("Unexpected end of data")
         value = struct.unpack_from("<Q", self._data, self._pos)[0]
         self._pos += 8
         return value
 
     def read_int64(self) -> int:
+        if self._pos + 8 > len(self._data):
+            raise ValueError("Unexpected end of data")
         value = struct.unpack_from("<q", self._data, self._pos)[0]
         self._pos += 8
         return value
@@ -101,11 +113,15 @@ class _BinaryReader:
         return int.from_bytes(self._read(16), "little", signed=True)
 
     def read_float32(self) -> float:
+        if self._pos + 4 > len(self._data):
+            raise ValueError("Unexpected end of data")
         value = struct.unpack_from("<f", self._data, self._pos)[0]
         self._pos += 4
         return value
 
     def read_float64(self) -> float:
+        if self._pos + 8 > len(self._data):
+            raise ValueError("Unexpected end of data")
         value = struct.unpack_from("<d", self._data, self._pos)[0]
         self._pos += 8
         return value

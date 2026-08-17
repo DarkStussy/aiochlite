@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Fixed
+- A response truncated in the middle of a fixed-width value raised `struct.error` instead of
+  `ChProtocolError`, because eight `_BinaryReader` methods left the bounds check to `struct` and
+  `struct.error` is no `ValueError`. It escaped the decode boundary and reached the caller raw.
+
 ### Changed
 - A row that is fixed-width end to end now decodes in a single `struct` pass instead of a Python
   call per row, in `fetch()`, `fetch_rows()` and `stream()`. On 200k rows: 3.5x on five numeric
