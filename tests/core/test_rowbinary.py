@@ -1,5 +1,6 @@
 import asyncio
 import ipaddress
+import struct
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Callable
@@ -759,7 +760,7 @@ def test_streaming_bulk_rows_survive_every_chunk_boundary():
 
         parser = RowBinaryWithNamesAndTypesStreamParser(_chunks())
         await parser.read_header()
-        assert parser._bulk is not None
+        assert parser._batch is not None
         return [row async for row in parser.rows()]
 
     expected = _expected_fixed_only_rows()
@@ -781,7 +782,8 @@ def test_streaming_bulk_reports_a_truncated_trailing_row():
         asyncio.run(_run())
 
 
-def test_streaming_keeps_the_reader_path_for_a_variable_width_row():
+def test_streaming_batches_a_row_of_fixed_and_string_columns():
+    """A String column keeps the row off the bulk path but not off the batched one."""
     payload = _fixed_width_payload()
 
     async def _chunks():
@@ -789,11 +791,38 @@ def test_streaming_keeps_the_reader_path_for_a_variable_width_row():
 
     async def _run():
         parser = RowBinaryWithNamesAndTypesStreamParser(_chunks())
-        await parser.read_header()
-        assert parser._bulk is None
+        types = (await parser.read_header())[1]
+        assert rowbinary._fixed_row_layout(types, None) is None
+        assert parser._batch is not None
         return [row async for row in parser.rows()]
 
     assert asyncio.run(_run()) == _expected_fixed_width_rows()
+
+
+def test_streaming_keeps_the_reader_path_for_an_uncovered_column():
+    parts = [
+        _encode_varuint(2),
+        _encode_string("id"),
+        _encode_string("vals"),
+        _encode_string("UInt8"),
+        _encode_string("Array(UInt8)"),
+        (7).to_bytes(1, "little"),
+        _encode_varuint(2),
+        (1).to_bytes(1, "little"),
+        (2).to_bytes(1, "little"),
+    ]
+    payload = b"".join(parts)
+
+    async def _chunks():
+        yield payload
+
+    async def _run():
+        parser = RowBinaryWithNamesAndTypesStreamParser(_chunks())
+        await parser.read_header()
+        assert parser._batch is None
+        return [row async for row in parser.rows()]
+
+    assert asyncio.run(_run()) == [[7, [1, 2]]]
 
 
 def test_value_cache_converts_once_per_distinct_value():
@@ -826,6 +855,77 @@ def test_value_cache_keeps_entries_past_the_bound_of_the_shared_cache():
         cached(value)
 
     assert converted == len(values)
+
+
+CODEGEN_SCHEMAS = [
+    ["String"],
+    ["UInt64", "String"],
+    ["String", "UInt64"],
+    ["String", "String"],
+    ["UInt64", "Float64", "String"],
+    ["String", "DateTime('UTC')", "String"],
+    ["LowCardinality(String)", "Int32"],
+    ["Bool", "String", "Decimal64(2)", "String", "Date"],
+]
+
+# Empty, one byte, exactly at and either side of the single-byte varint limit, and multi-byte.
+CODEGEN_STRINGS = ["", "x", "ünïcødé ✓", "a" * 126, "b" * 127, "c" * 128, "d" * 129, "e" * 500]
+
+
+def _codegen_payload(types: list[str], rows: int) -> bytes:
+    values: dict[str, Callable[[int], bytes]] = {
+        "String": lambda i: _encode_string(CODEGEN_STRINGS[i % len(CODEGEN_STRINGS)]),
+        "LowCardinality(String)": lambda i: _encode_string(f"cat-{i % 3}"),
+        "UInt64": lambda i: i.to_bytes(8, "little"),
+        "Int32": lambda i: (-i).to_bytes(4, "little", signed=True),
+        "Float64": lambda i: struct.pack("<d", i * 1.5),
+        "Bool": lambda i: bytes([i % 2]),
+        "Date": lambda i: (20000 + i).to_bytes(2, "little"),
+        "DateTime('UTC')": lambda i: (1734160800 + i).to_bytes(4, "little"),
+        "Decimal64(2)": lambda i: (i * 7 - 3).to_bytes(8, "little", signed=True),
+    }
+    header = [_encode_varuint(len(types))]
+    header += [_encode_string(f"c{idx}") for idx in range(len(types))]
+    header += [_encode_string(ch_type) for ch_type in types]
+
+    return b"".join(header) + b"".join(b"".join(values[t](i) for t in types) for i in range(rows))
+
+
+@pytest.mark.parametrize("types", CODEGEN_SCHEMAS, ids=",".join)
+@pytest.mark.parametrize("as_tuple", [False, True])
+def test_compiled_and_reader_paths_agree(types: list[str], as_tuple: bool, monkeypatch: pytest.MonkeyPatch):
+    """The compiled decoder must produce exactly what the per-field reader does."""
+    payload = _codegen_payload(types, len(CODEGEN_STRINGS))
+    compiled = _parse_rows(payload, as_tuple=as_tuple)
+
+    monkeypatch.setattr(rowbinary, "_compiled_row_decoder", lambda *_, **__: None)
+
+    assert compiled == _parse_rows(payload, as_tuple=as_tuple)
+    assert all(isinstance(row, tuple if as_tuple else list) for row in compiled)
+
+
+@pytest.mark.parametrize("cut", range(1, 30))
+def test_compiled_decoder_rejects_a_truncated_row(cut: int):
+    """Stopping on a row boundary must be reported, not returned as a short result."""
+    payload = _codegen_payload(["UInt64", "String", "DateTime('UTC')"], 4)
+
+    with pytest.raises(ValueError, match="Unexpected end of data"):
+        list(parse_rowbinary_with_names_and_types(payload[:-cut])[2])
+
+
+@pytest.mark.parametrize("ch_type", ["Array(UInt8)", "Map(String, UInt8)", "Nullable(UInt64)", "JSON", "UUID"])
+def test_an_uncovered_column_is_not_compiled(ch_type: str):
+    assert rowbinary._compiled_row_decoder(("UInt64", ch_type), "UTC", as_tuple=True) is None
+
+
+def test_compiled_cache_holds_no_converters():
+    """Converters memoize per query, so caching one would pin every decoded value."""
+    compiled = rowbinary._compiled_row_decoder(("DateTime('UTC')", "String"), "UTC", as_tuple=True)
+
+    assert compiled is not None
+    _code, schema_globals, converted = compiled
+    assert converted == (0,)
+    assert not [name for name in schema_globals if name.startswith("_c")]
 
 
 @pytest.mark.parametrize(

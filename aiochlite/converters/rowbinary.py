@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator, Sequence
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from functools import lru_cache
+from types import CodeType
 from typing import Any, Callable, Iterable, Literal, Protocol, overload
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -719,6 +720,179 @@ def _bulk_decode(
     return rows
 
 
+_BatchDecoder = Callable[[Any, int, int], tuple[list[Any], int]]
+
+
+def _bulk_batch(unpacker: struct.Struct, conv_slots: _ConvSlots) -> _BatchDecoder:
+    """`_bulk_decode` as a batch over whole rows, for the streaming loop."""
+    width = unpacker.size
+
+    def batch(data: Any, pos: int, end: int) -> tuple[list[Any], int]:
+        count = (end - pos) // width
+        if not count:
+            return [], pos
+
+        stop = pos + count * width
+        # A memoryview would block the resize that feeding the next chunk does.
+        return _bulk_decode(bytes(data[pos:stop]), 0, unpacker, conv_slots, as_tuple=False), stop
+
+    return batch
+
+
+def _read_varint(data: bytes, pos: int, end: int) -> tuple[int, int]:
+    """LEB128 from `pos`, or `(-1, pos)` if it runs past `end`. Called by generated code."""
+    result = 0
+    shift = 0
+    while True:
+        if pos >= end:
+            return -1, pos
+
+        byte = data[pos]
+        pos += 1
+        result |= (byte & 0x7F) << shift
+        if byte < 0x80:
+            return result, pos
+
+        shift += 7
+
+
+# Columns the generator can emit inline. Everything else keeps the reader path.
+def _codegen_kind(ch_type: str, server_tz: str | None) -> tuple[str, str | None] | None:
+    """`("fixed", code)`, `("string", None)`, or None if the column needs a reader."""
+    unwrapped = ch_type.strip()
+    while unwrapped.startswith("LowCardinality(") and unwrapped.endswith(")"):
+        unwrapped = unwrapped[15:-1].strip()
+
+    field = _fixed_field(unwrapped, server_tz)
+    if field is not None:
+        return "fixed", field[0]
+
+    return ("string", None) if unwrapped == "String" else None
+
+
+def _emit_fixed_run(columns: list[int], codes: str, converted: set[int]) -> list[str]:
+    unpacker = struct.Struct(f"<{codes}")
+    targets = ", ".join(f"v{column}" for column in columns)
+    lines = [
+        f"        _e = p + {unpacker.size}",
+        "        if _e > end: break",
+        f"        {targets}{',' if len(columns) == 1 else ''} = _s{columns[0]}(data, p)",
+        "        p = _e",
+    ]
+    lines += [f"        v{column} = _c{column}(v{column})" for column in columns if column in converted]
+    return lines
+
+
+def _emit_string(column: int) -> list[str]:
+    return [
+        "        if p >= end: break",
+        "        _l = data[p]",
+        "        p += 1",
+        # One byte covers any string shorter than 128, which is nearly all of them.
+        "        if _l > 0x7F:",
+        "            _l, p = _varint(data, p - 1, end)",
+        "            if _l < 0: break",
+        "        _e = p + _l",
+        "        if _e > end: break",
+        f"        v{column} = data[p:_e].decode()",
+        "        p = _e",
+    ]
+
+
+@lru_cache(maxsize=256)
+def _compiled_row_decoder(
+    types: tuple[str, ...],
+    server_tz: str | None,
+    *,
+    as_tuple: bool,
+) -> tuple[CodeType, dict[str, Any], tuple[int, ...]] | None:
+    """Code and schema-derived globals for a decoder over `types`, or None if unsupported.
+
+    The converters are left out: they memoize per query, so caching them here would keep every
+    decoded value for the life of the process.
+    """
+    kinds = [_codegen_kind(ch_type, server_tz) for ch_type in types]
+    if not kinds or any(kind is None for kind in kinds):
+        return None
+
+    converted = {
+        column for column, ch_type in enumerate(types) if (_fixed_field(ch_type, server_tz) or (None, None))[1]
+    }
+    namespace: dict[str, Any] = {"_varint": _read_varint}
+    body: list[str] = []
+    column = 0
+
+    while column < len(kinds):
+        kind = kinds[column]
+        assert kind is not None
+        if kind[0] == "string":
+            body += _emit_string(column)
+            column += 1
+            continue
+
+        # Consecutive fixed-width columns share one struct call, as in the bulk path.
+        run: list[int] = []
+        codes = ""
+        while column < len(kinds) and (entry := kinds[column]) is not None and entry[0] == "fixed":
+            run.append(column)
+            codes += entry[1] or ""
+            column += 1
+
+        namespace[f"_s{run[0]}"] = struct.Struct(f"<{codes}").unpack_from
+        body += _emit_fixed_run(run, codes, converted)
+
+    values = ", ".join(f"v{column}" for column in range(len(kinds)))
+    source = "\n".join(
+        [
+            "def _decode(data, pos, end):",
+            "    rows = []",
+            "    append = rows.append",
+            "    while pos < end:",
+            # `p` advances through the row and is committed only once the row is whole, so a
+            # partial trailing row leaves `pos` on a row boundary.
+            "        p = pos",
+            *body,
+            f"        append({f'({values},)' if as_tuple else f'[{values}]'})",
+            "        pos = p",
+            "    return rows, pos",
+        ]
+    )
+
+    return compile(source, f"<rowbinary:{','.join(types)}>", "exec"), namespace, tuple(sorted(converted))
+
+
+def _row_decoder(
+    types: list[str],
+    server_tz: str | None,
+    *,
+    as_tuple: bool,
+) -> Callable[[bytes, int, int], tuple[list[Any], int]] | None:
+    """Decoder specialized to this schema, or None if a column needs the reader path."""
+    compiled = _compiled_row_decoder(tuple(types), server_tz, as_tuple=as_tuple)
+    if compiled is None:
+        return None
+
+    code, schema_globals, converted = compiled
+    namespace = dict(schema_globals)
+    for column in converted:
+        field = _fixed_field(types[column], server_tz)
+        assert field is not None
+        namespace[f"_c{column}"] = field[1]
+
+    exec(code, namespace)  # noqa: S102
+    return namespace["_decode"]
+
+
+def _batch_decoder(types: list[str], server_tz: str | None) -> _BatchDecoder | None:
+    """Decoder that takes as many whole rows as a buffer holds, or None if the schema needs the
+    reader path."""
+    layout = _fixed_row_layout(types, server_tz)
+    if layout is not None:
+        return _bulk_batch(*layout)
+
+    return _row_decoder(types, server_tz, as_tuple=False)
+
+
 def _struct_row_reader(codes: list[str], conv_slots: _ConvSlots) -> Callable[[_Reader], list[Any]]:
     """Reader for a row that is fixed-width end to end: one struct call per row."""
     unpacker = struct.Struct(f"<{''.join(codes)}")
@@ -872,6 +1046,14 @@ def parse_rowbinary_with_names_and_types(
     layout = _fixed_row_layout(types, server_tz)
     if layout is not None:
         return names, types, _bulk_decode(data, reader.pos, *layout, as_tuple=as_tuple)
+
+    decode = _row_decoder(types, server_tz, as_tuple=as_tuple)
+    if decode is not None:
+        rows, pos = decode(data, reader.pos, len(data))
+        # The decoder stops on a row boundary, so anything left over is half a row.
+        if pos != len(data):
+            raise ValueError("Unexpected end of data")
+        return names, types, rows
 
     return names, types, _reader_rows(reader, types, server_tz, as_tuple)
 
@@ -1231,6 +1413,10 @@ class _StreamingReader:
         self._pos = value
 
     @property
+    def buffer(self) -> bytearray:
+        return self._buf
+
+    @property
     def remaining(self) -> int:
         return len(self._buf) - self._pos
 
@@ -1382,7 +1568,7 @@ class RowBinaryWithNamesAndTypesStreamParser:
         self._read_row: Callable[[_Reader], list[Any]] | None = None
         self._skippers: list[Callable[[_Reader], None]] | None = None
         self._row_template: tuple[list[int], int] | None = None
-        self._bulk: tuple[struct.Struct, _ConvSlots] | None = None
+        self._batch: _BatchDecoder | None = None
         self._lazy = lazy
         self._server_tz = server_tz
 
@@ -1414,8 +1600,8 @@ class RowBinaryWithNamesAndTypesStreamParser:
                     self._read_row = None
                 else:
                     self._skippers = None
-                    self._bulk = _fixed_row_layout(types, self._server_tz)
-                    self._read_row = None if self._bulk else _make_row_reader(types, self._server_tz)
+                    self._batch = _batch_decoder(types, self._server_tz)
+                    self._read_row = None if self._batch else _make_row_reader(types, self._server_tz)
             except _NeedMoreData:
                 self._reader.pos = checkpoint
                 if not await self._fill():
@@ -1450,20 +1636,15 @@ class RowBinaryWithNamesAndTypesStreamParser:
         assert self._readers is not None
         read_row = self._read_row
 
-        if self._bulk is not None:
-            unpacker, conv_slots = self._bulk
+        if self._batch is not None:
             reader = self._reader
-            width = unpacker.size
+            decode_batch = self._batch
 
             while True:
                 # Whole rows go in one pass; a partial trailing row waits for the next chunk.
-                count = reader.remaining // width
-                if count:
-                    start = reader.pos
-                    end = start + count * width
-                    # A memoryview would block the resize that feeding the next chunk does.
-                    batch = _bulk_decode(reader.copy_slice(start, end), 0, unpacker, conv_slots, as_tuple=False)
-                    reader.pos = end
+                batch, pos = decode_batch(reader.buffer, reader.pos, len(reader.buffer))
+                if batch:
+                    reader.pos = pos
                     reader.compact()
                     for row in batch:
                         yield row
