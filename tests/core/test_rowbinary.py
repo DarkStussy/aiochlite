@@ -1,5 +1,6 @@
 import asyncio
 import ipaddress
+import json
 import struct
 from datetime import date, datetime, timedelta
 from decimal import Decimal
@@ -474,6 +475,40 @@ def test_parse_rowbinary_json_type_as_string():
     assert names == ["doc"]
     assert types == ["JSON"]
     assert parsed == [[{"a": 1, "b": [True, None]}]]
+
+
+JSON_DOCUMENTS = [
+    '{"a":1,"b":[true,null]}',
+    "{}",
+    "[]",
+    "42",
+    '"hi"',
+    "null",
+    # Where the scanner alone would differ from `loads`.
+    '{"v": 18446744073709551615}',
+    '{"v": "\\ud800"}',
+    '{"a":' * 200 + "1" + "}" * 200,
+    '  {"led": "by whitespace"}',
+]
+
+
+@pytest.mark.parametrize("document", JSON_DOCUMENTS)
+def test_json_column_decodes_as_the_standard_library_would(document: str):
+    """The decoder reaches the C scanner directly, skipping what `loads` checks around it."""
+    parts = [_encode_varuint(1), _encode_string("doc"), _encode_string("JSON"), _encode_string(document)]
+
+    _names, _types, rows = parse_rowbinary_with_names_and_types(b"".join(parts))
+
+    assert [row[0] for row in rows] == [json.loads(document)]
+
+
+@pytest.mark.parametrize("document", ["", "{oops}", '{"a": ', "  "])
+def test_a_malformed_json_column_raises_what_the_standard_library_raises(document: str):
+    """The scanner signals these by StopIteration, which must not reach the caller."""
+    parts = [_encode_varuint(1), _encode_string("doc"), _encode_string("JSON"), _encode_string(document)]
+
+    with pytest.raises(json.JSONDecodeError):
+        list(parse_rowbinary_with_names_and_types(b"".join(parts))[2])
 
 
 def _fixed_width_parts() -> tuple[bytes, list[tuple[bytes, bytes]]]:

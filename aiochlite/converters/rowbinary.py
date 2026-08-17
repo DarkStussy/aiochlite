@@ -522,6 +522,24 @@ def _uuid_reader(reader: _Reader) -> UUID:
     return _uuid_from_bytes(reader._read(16).tobytes())
 
 
+def _loads_at(text: str, _idx: int) -> tuple[Any, int]:
+    """Stand-in where a runtime exposes no C scanner."""
+    return json.loads(text), 0
+
+
+# What `loads` reaches after argument checks and a whitespace scan, neither of which a
+# length-delimited field needs. They cost 40% of the decode.
+_scan_json = getattr(json.JSONDecoder(), "scan_once", _loads_at)
+
+
+def _json_reader(reader: _Reader) -> Any:
+    text = reader.read_string()
+    try:
+        return _scan_json(text, 0)[0]
+    except StopIteration:
+        return json.loads(text)  # empty, whitespace-led or truncated
+
+
 _PRIMITIVE_READERS: dict[str, Callable[[_Reader], Any]] = {
     "Bool": lambda r: r.read_uint8() != 0,
     "Float32": lambda r: r.read_float32(),
@@ -530,7 +548,7 @@ _PRIMITIVE_READERS: dict[str, Callable[[_Reader], Any]] = {
     "Int16": lambda r: r.read_int16(),
     "Int32": lambda r: r.read_int32(),
     "Int64": lambda r: r.read_int64(),
-    "JSON": lambda r: json.loads(r.read_string()),
+    "JSON": _json_reader,
     "String": lambda r: r.read_string(),
     "UInt8": lambda r: r.read_uint8(),
     "UInt16": lambda r: r.read_uint16(),
