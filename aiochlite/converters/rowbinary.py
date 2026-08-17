@@ -756,12 +756,30 @@ def _read_varint(data: bytes, pos: int, end: int) -> tuple[int, int]:
         shift += 7
 
 
-# Columns the generator can emit inline. Everything else keeps the reader path.
-def _codegen_kind(ch_type: str, server_tz: str | None) -> tuple[str, str | None] | None:
-    """`("fixed", code)`, `("string", None)`, or None if the column needs a reader."""
+def _strip_low_cardinality(ch_type: str) -> str:
     unwrapped = ch_type.strip()
     while unwrapped.startswith("LowCardinality(") and unwrapped.endswith(")"):
         unwrapped = unwrapped[15:-1].strip()
+
+    return unwrapped
+
+
+def _codegen_value_type(ch_type: str) -> str:
+    """The type holding the value, with the wrappers that only prefix a null flag taken off."""
+    unwrapped = _strip_low_cardinality(ch_type)
+    if unwrapped.startswith("Nullable(") and unwrapped.endswith(")"):
+        return _strip_low_cardinality(unwrapped[9:-1])
+
+    return unwrapped
+
+
+# Columns the generator can emit inline. Everything else keeps the reader path.
+def _codegen_kind(ch_type: str, server_tz: str | None) -> tuple[str, Any] | None:
+    """`("fixed", code)`, `("string", None)`, `("nullable", inner)`, or None if it needs a reader."""
+    unwrapped = _strip_low_cardinality(ch_type)
+    if unwrapped.startswith("Nullable(") and unwrapped.endswith(")"):
+        inner = _codegen_kind(unwrapped[9:-1], server_tz)
+        return ("nullable", inner) if inner is not None and inner[0] != "nullable" else None
 
     field = _fixed_field(unwrapped, server_tz)
     if field is not None:
@@ -770,33 +788,50 @@ def _codegen_kind(ch_type: str, server_tz: str | None) -> tuple[str, str | None]
     return ("string", None) if unwrapped == "String" else None
 
 
-def _emit_fixed_run(columns: list[int], codes: str, converted: set[int]) -> list[str]:
+def _emit_fixed_run(columns: list[int], codes: str, converted: set[int], indent: str) -> list[str]:
     unpacker = struct.Struct(f"<{codes}")
     targets = ", ".join(f"v{column}" for column in columns)
     lines = [
-        f"        _e = p + {unpacker.size}",
-        "        if _e > end: break",
-        f"        {targets}{',' if len(columns) == 1 else ''} = _s{columns[0]}(data, p)",
-        "        p = _e",
+        f"{indent}_e = p + {unpacker.size}",
+        f"{indent}if _e > end: break",
+        f"{indent}{targets}{',' if len(columns) == 1 else ''} = _s{columns[0]}(data, p)",
+        f"{indent}p = _e",
     ]
-    lines += [f"        v{column} = _c{column}(v{column})" for column in columns if column in converted]
+    lines += [f"{indent}v{column} = _c{column}(v{column})" for column in columns if column in converted]
     return lines
 
 
-def _emit_string(column: int) -> list[str]:
+def _emit_string(column: int, indent: str) -> list[str]:
     return [
-        "        if p >= end: break",
-        "        _l = data[p]",
-        "        p += 1",
+        f"{indent}if p >= end: break",
+        f"{indent}_l = data[p]",
+        f"{indent}p += 1",
         # One byte covers any string shorter than 128, which is nearly all of them.
-        "        if _l > 0x7F:",
-        "            _l, p = _varint(data, p - 1, end)",
-        "            if _l < 0: break",
-        "        _e = p + _l",
-        "        if _e > end: break",
-        f"        v{column} = data[p:_e].decode()",
-        "        p = _e",
+        f"{indent}if _l > 0x7F:",
+        f"{indent}    _l, p = _varint(data, p - 1, end)",
+        f"{indent}    if _l < 0: break",
+        f"{indent}_e = p + _l",
+        f"{indent}if _e > end: break",
+        f"{indent}v{column} = data[p:_e].decode()",
+        f"{indent}p = _e",
     ]
+
+
+def _emit_nullable(column: int, inner: tuple[str, Any], converted: set[int], indent: str) -> list[str]:
+    # A `break` inside the else still leaves the row loop, so a short value is reported as one.
+    lines = [
+        f"{indent}if p >= end: break",
+        f"{indent}_n = data[p]",
+        f"{indent}p += 1",
+        f"{indent}if _n:",
+        f"{indent}    v{column} = None",
+        f"{indent}else:",
+    ]
+    nested = f"{indent}    "
+    if inner[0] == "string":
+        return lines + _emit_string(column, nested)
+
+    return lines + _emit_fixed_run([column], inner[1], converted, nested)
 
 
 @lru_cache(maxsize=256)
@@ -816,7 +851,9 @@ def _compiled_row_decoder(
         return None
 
     converted = {
-        column for column, ch_type in enumerate(types) if (_fixed_field(ch_type, server_tz) or (None, None))[1]
+        column
+        for column, ch_type in enumerate(types)
+        if (_fixed_field(_codegen_value_type(ch_type), server_tz) or (None, None))[1]
     }
     namespace: dict[str, Any] = {"_varint": _read_varint}
     body: list[str] = []
@@ -826,7 +863,15 @@ def _compiled_row_decoder(
         kind = kinds[column]
         assert kind is not None
         if kind[0] == "string":
-            body += _emit_string(column)
+            body += _emit_string(column, "        ")
+            column += 1
+            continue
+
+        if kind[0] == "nullable":
+            # The null flag makes the width vary, so the column cannot join a run.
+            if kind[1][0] == "fixed":
+                namespace[f"_s{column}"] = struct.Struct(f"<{kind[1][1]}").unpack_from
+            body += _emit_nullable(column, kind[1], converted, "        ")
             column += 1
             continue
 
@@ -839,7 +884,7 @@ def _compiled_row_decoder(
             column += 1
 
         namespace[f"_s{run[0]}"] = struct.Struct(f"<{codes}").unpack_from
-        body += _emit_fixed_run(run, codes, converted)
+        body += _emit_fixed_run(run, codes, converted, "        ")
 
     values = ", ".join(f"v{column}" for column in range(len(kinds)))
     source = "\n".join(
@@ -875,7 +920,7 @@ def _row_decoder(
     code, schema_globals, converted = compiled
     namespace = dict(schema_globals)
     for column in converted:
-        field = _fixed_field(types[column], server_tz)
+        field = _fixed_field(_codegen_value_type(types[column]), server_tz)
         assert field is not None
         namespace[f"_c{column}"] = field[1]
 

@@ -866,23 +866,54 @@ CODEGEN_SCHEMAS = [
     ["String", "DateTime('UTC')", "String"],
     ["LowCardinality(String)", "Int32"],
     ["Bool", "String", "Decimal64(2)", "String", "Date"],
+    ["Nullable(UInt64)"],
+    ["Nullable(String)"],
+    ["Nullable(UInt64)", "Nullable(String)", "Int32"],
+    ["UInt64", "Nullable(DateTime('UTC'))", "String"],
+    ["LowCardinality(Nullable(String))", "Nullable(Decimal64(2))"],
 ]
 
 # Empty, one byte, exactly at and either side of the single-byte varint limit, and multi-byte.
 CODEGEN_STRINGS = ["", "x", "ünïcødé ✓", "a" * 126, "b" * 127, "c" * 128, "d" * 129, "e" * 500]
 
 
+def _nullable(encode: Callable[[int], bytes]) -> Callable[[int], bytes]:
+    """Every third row null, so both branches of the column are exercised."""
+    return lambda i: b"\x01" if i % 3 == 0 else b"\x00" + encode(i)
+
+
+def _string(i: int) -> bytes:
+    return _encode_string(CODEGEN_STRINGS[i % len(CODEGEN_STRINGS)])
+
+
+def _uint64(i: int) -> bytes:
+    return i.to_bytes(8, "little")
+
+
+def _datetime_utc(i: int) -> bytes:
+    return (1734160800 + i).to_bytes(4, "little")
+
+
+def _decimal64(i: int) -> bytes:
+    return (i * 7 - 3).to_bytes(8, "little", signed=True)
+
+
 def _codegen_payload(types: list[str], rows: int) -> bytes:
     values: dict[str, Callable[[int], bytes]] = {
-        "String": lambda i: _encode_string(CODEGEN_STRINGS[i % len(CODEGEN_STRINGS)]),
+        "String": _string,
         "LowCardinality(String)": lambda i: _encode_string(f"cat-{i % 3}"),
-        "UInt64": lambda i: i.to_bytes(8, "little"),
+        "UInt64": _uint64,
         "Int32": lambda i: (-i).to_bytes(4, "little", signed=True),
         "Float64": lambda i: struct.pack("<d", i * 1.5),
         "Bool": lambda i: bytes([i % 2]),
         "Date": lambda i: (20000 + i).to_bytes(2, "little"),
-        "DateTime('UTC')": lambda i: (1734160800 + i).to_bytes(4, "little"),
-        "Decimal64(2)": lambda i: (i * 7 - 3).to_bytes(8, "little", signed=True),
+        "DateTime('UTC')": _datetime_utc,
+        "Decimal64(2)": _decimal64,
+        "Nullable(UInt64)": _nullable(_uint64),
+        "Nullable(String)": _nullable(_string),
+        "Nullable(DateTime('UTC'))": _nullable(_datetime_utc),
+        "Nullable(Decimal64(2))": _nullable(_decimal64),
+        "LowCardinality(Nullable(String))": _nullable(_string),
     }
     header = [_encode_varuint(len(types))]
     header += [_encode_string(f"c{idx}") for idx in range(len(types))]
@@ -913,7 +944,10 @@ def test_compiled_decoder_rejects_a_truncated_row(cut: int):
         list(parse_rowbinary_with_names_and_types(payload[:-cut])[2])
 
 
-@pytest.mark.parametrize("ch_type", ["Array(UInt8)", "Map(String, UInt8)", "Nullable(UInt64)", "JSON", "UUID"])
+@pytest.mark.parametrize(
+    "ch_type",
+    ["Array(UInt8)", "Map(String, UInt8)", "JSON", "UUID", "Nullable(UUID)", "Nullable(Array(UInt8))"],
+)
 def test_an_uncovered_column_is_not_compiled(ch_type: str):
     assert rowbinary._compiled_row_decoder(("UInt64", ch_type), "UTC", as_tuple=True) is None
 

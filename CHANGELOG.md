@@ -17,11 +17,12 @@
   `DateTime` values at 20k distinct took 51.7 ms bounded, against 39.5 ms uncached and 8.8 ms
   unbounded. The cache is released with the query, so it adds no order of memory over the result.
   Converters shared across queries keep the bound.
-- A schema of fixed-width and `String` columns now decodes through a loop compiled for that
-  schema, rather than a reader call per column per row. On 200k rows: 3.4x on
-  `UInt64, Float64, String`, 2.9x on `UInt64, String, DateTime, String`, 2.1x-2.9x streaming.
-  The compiled code is cached per schema; the converters it uses are not, so their per-query
-  caches are still released with the query. A column of any other type keeps the reader path.
+- A schema of fixed-width, `String` and `Nullable` columns now decodes through a loop compiled
+  for that schema, rather than a reader call per column per row. On 200k rows: 3.4x on
+  `UInt64, Float64, String`, 3.6x on `UInt64, Nullable(String), Nullable(DateTime)`, 2.1x-2.9x
+  streaming. The compiled code is cached per schema; the converters it uses are not, so their
+  per-query caches are still released with the query. A column of any other type, `Array` and
+  `UUID` among them, keeps the reader path.
 
 ## 1.6.0 (2026-08-15)
 
