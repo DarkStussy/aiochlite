@@ -23,6 +23,12 @@
   streaming. The compiled code is cached per schema; the converters it uses are not, so their
   per-query caches are still released with the query. A column of any other type, `Array` and
   `Map` among them, keeps the reader path.
+- An `Array` of fixed-width elements now decodes with one `struct` call for the whole array
+  instead of a reader call per element, and an `Array(String)` with one call per array. On 100k
+  rows: 6.0x on `Array(UInt64)` of 20 elements, 3.8x of 3, 4.0x on
+  `UInt64, Array(Decimal64(2)), String`, 1.6x on `Array(String)`. A nested `Array`, an
+  `Array(Nullable(...))` and an `Array(Tuple(...))` keep the reader path, as does `JSON`, whose
+  decode is over 90% `json.loads` and gains nothing from compiling the walk around it.
 - `UUID`, `IPv6`, `FixedString` and `Decimal` past 64 bits now count as fixed-width wherever the
   two paths above look for one, having previously been read one column at a time. They travel as
   raw bytes through a `Ns` struct code and are widened by their converter. On 200k rows of

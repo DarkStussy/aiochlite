@@ -784,6 +784,47 @@ def _read_varint(data: bytes, pos: int, end: int) -> tuple[int, int]:
         shift += 7
 
 
+# An array's length is only known per row, so a Struct is built per element count. A column of
+# many distinct lengths would otherwise keep one for each.
+_ARRAY_UNPACKER_CACHE = 256
+
+
+class _ArrayUnpackers(dict[int, Callable[..., tuple[Any, ...]]]):
+    """`unpack_from` for a run of `count` elements of one type."""
+
+    __slots__ = ("_code",)
+
+    def __init__(self, code: str):
+        super().__init__()
+        self._code = code
+
+    def __missing__(self, count: int) -> Callable[..., tuple[Any, ...]]:
+        if len(self) >= _ARRAY_UNPACKER_CACHE:
+            self.clear()
+
+        # Repeated rather than prefixed with the count: `3` before `16s` would read one 316-byte
+        # string instead of three 16-byte ones.
+        value = self[count] = struct.Struct(f"<{self._code * count}").unpack_from
+        return value
+
+
+def _read_string_array(data: bytes, pos: int, count: int, end: int) -> tuple[list[str] | None, int]:
+    """`count` strings from `pos`, or `(None, pos)` if they run past `end`. Called by generated
+    code: a `break` from an inner loop would leave the row loop running."""
+    values: list[str] = []
+    append = values.append
+    for _ in range(count):
+        length, pos = _read_varint(data, pos, end)
+        stop = pos + length
+        if length < 0 or stop > end:
+            return None, pos
+
+        append(data[pos:stop].decode())
+        pos = stop
+
+    return values, pos
+
+
 def _strip_low_cardinality(ch_type: str) -> str:
     unwrapped = ch_type.strip()
     while unwrapped.startswith("LowCardinality(") and unwrapped.endswith(")"):
@@ -793,8 +834,10 @@ def _strip_low_cardinality(ch_type: str) -> str:
 
 
 def _codegen_value_type(ch_type: str) -> str:
-    """The type holding the value, with the wrappers that only prefix a null flag taken off."""
+    """The type whose converter the column needs, with the wrappers around it taken off."""
     unwrapped = _strip_low_cardinality(ch_type)
+    if unwrapped.startswith("Array(") and unwrapped.endswith(")"):
+        unwrapped = _strip_low_cardinality(unwrapped[6:-1])
     if unwrapped.startswith("Nullable(") and unwrapped.endswith(")"):
         return _strip_low_cardinality(unwrapped[9:-1])
 
@@ -807,12 +850,26 @@ def _codegen_kind(ch_type: str, server_tz: str | None) -> tuple[str, Any] | None
     unwrapped = _strip_low_cardinality(ch_type)
     if unwrapped.startswith("Nullable(") and unwrapped.endswith(")"):
         inner = _codegen_kind(unwrapped[9:-1], server_tz)
-        return ("nullable", inner) if inner is not None and inner[0] != "nullable" else None
+        # Only what `_emit_nullable` can nest. ClickHouse rejects `Nullable(Array(...))` anyway,
+        # but an unhandled kind here would silently emit a decoder for the wrong shape.
+        return ("nullable", inner) if inner is not None and inner[0] in {"fixed", "string"} else None
+
+    if unwrapped.startswith("Array(") and unwrapped.endswith(")"):
+        element = _strip_low_cardinality(unwrapped[6:-1])
+        if element == "String":
+            return "array_string", None
+
+        # Only a flat array of a fixed-width type: anything deeper would need the generator to
+        # nest, and the reader path handles it well enough.
+        field = _fixed_field(element, server_tz)
+        return ("array_fixed", field[0]) if field is not None else None
 
     field = _fixed_field(unwrapped, server_tz)
     if field is not None:
         return "fixed", field[0]
 
+    # `JSON` is left out on purpose: `json.loads` is over 90% of its decode, so compiling the
+    # walk around it measured no faster than the reader path.
     return ("string", None) if unwrapped == "String" else None
 
 
@@ -829,19 +886,48 @@ def _emit_fixed_run(columns: list[int], codes: str, converted: set[int], indent:
     return lines
 
 
-def _emit_string(column: int, indent: str) -> list[str]:
+def _emit_varuint(indent: str) -> list[str]:
+    """Read a length or element count into `_l`."""
     return [
         f"{indent}if p >= end: break",
         f"{indent}_l = data[p]",
         f"{indent}p += 1",
-        # One byte covers any string shorter than 128, which is nearly all of them.
+        # One byte covers any value below 128, which is nearly every length and count.
         f"{indent}if _l > 0x7F:",
         f"{indent}    _l, p = _varint(data, p - 1, end)",
         f"{indent}    if _l < 0: break",
+    ]
+
+
+def _emit_string(column: int, indent: str) -> list[str]:
+    return [
+        *_emit_varuint(indent),
         f"{indent}_e = p + _l",
         f"{indent}if _e > end: break",
         f"{indent}v{column} = data[p:_e].decode()",
         f"{indent}p = _e",
+    ]
+
+
+def _emit_array_fixed(column: int, code: str, converted: set[int], indent: str) -> list[str]:
+    size = struct.calcsize(f"<{code}")
+    elements = f"_u{column}[_l](data, p)"
+    return [
+        *_emit_varuint(indent),
+        f"{indent}_e = p + _l * {size}",
+        f"{indent}if _e > end: break",
+        # One struct call for the whole array, where the reader path costs one per element.
+        f"{indent}v{column} = "
+        + (f"[_c{column}(_x) for _x in {elements}]" if column in converted else f"list({elements})"),
+        f"{indent}p = _e",
+    ]
+
+
+def _emit_array_string(column: int, indent: str) -> list[str]:
+    return [
+        *_emit_varuint(indent),
+        f"{indent}v{column}, p = _strings(data, p, _l, end)",
+        f"{indent}if v{column} is None: break",
     ]
 
 
@@ -859,6 +945,7 @@ def _emit_nullable(column: int, inner: tuple[str, Any], converted: set[int], ind
     if inner[0] == "string":
         return lines + _emit_string(column, nested)
 
+    assert inner[0] == "fixed", inner[0]
     return lines + _emit_fixed_run([column], inner[1], converted, nested)
 
 
@@ -883,7 +970,7 @@ def _compiled_row_decoder(
         for column, ch_type in enumerate(types)
         if (_fixed_field(_codegen_value_type(ch_type), server_tz) or (None, None))[1]
     }
-    namespace: dict[str, Any] = {"_varint": _read_varint}
+    namespace: dict[str, Any] = {"_varint": _read_varint, "_strings": _read_string_array}
     body: list[str] = []
     column = 0
 
@@ -892,6 +979,17 @@ def _compiled_row_decoder(
         assert kind is not None
         if kind[0] == "string":
             body += _emit_string(column, "        ")
+            column += 1
+            continue
+
+        if kind[0] == "array_string":
+            body += _emit_array_string(column, "        ")
+            column += 1
+            continue
+
+        if kind[0] == "array_fixed":
+            namespace[f"_u{column}"] = _ArrayUnpackers(kind[1])
+            body += _emit_array_fixed(column, kind[1], converted, "        ")
             column += 1
             continue
 

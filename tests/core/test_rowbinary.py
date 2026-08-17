@@ -812,13 +812,12 @@ def test_streaming_keeps_the_reader_path_for_an_uncovered_column():
     parts = [
         _encode_varuint(2),
         _encode_string("id"),
-        _encode_string("vals"),
+        _encode_string("pair"),
         _encode_string("UInt8"),
-        _encode_string("Array(UInt8)"),
+        _encode_string("Tuple(String, UInt8)"),
         (7).to_bytes(1, "little"),
-        _encode_varuint(2),
-        (1).to_bytes(1, "little"),
-        (2).to_bytes(1, "little"),
+        _encode_string("hi"),
+        (5).to_bytes(1, "little"),
     ]
     payload = b"".join(parts)
 
@@ -831,7 +830,7 @@ def test_streaming_keeps_the_reader_path_for_an_uncovered_column():
         assert parser._batch is None
         return [row async for row in parser.rows()]
 
-    assert asyncio.run(_run()) == [[7, [1, 2]]]
+    assert asyncio.run(_run()) == [[7, ("hi", 5)]]
 
 
 def test_value_cache_converts_once_per_distinct_value():
@@ -884,10 +883,20 @@ CODEGEN_SCHEMAS = [
     ["FixedString(5)", "UInt64"],
     ["Decimal128(2)", "String", "IPv6"],
     ["Nullable(UUID)", "Nullable(FixedString(5))"],
+    ["Array(UInt64)"],
+    ["Array(String)"],
+    ["UInt64", "Array(UInt64)", "String"],
+    ["Array(DateTime('UTC'))", "Array(UUID)"],
+    ["Array(String)", "Nullable(String)", "Array(Decimal64(2))"],
 ]
 
 # Empty, one byte, exactly at and either side of the single-byte varint limit, and multi-byte.
 CODEGEN_STRINGS = ["", "x", "ünïcødé ✓", "a" * 126, "b" * 127, "c" * 128, "d" * 129, "e" * 500]
+
+
+def _array(i: int, encode: Callable[[int], bytes]) -> bytes:
+    count = i % 4
+    return _encode_varuint(count) + b"".join(encode(i + j) for j in range(count))
 
 
 def _nullable(encode: Callable[[int], bytes]) -> Callable[[int], bytes]:
@@ -941,6 +950,12 @@ def _codegen_payload(types: list[str], rows: int) -> bytes:
         "Decimal128(2)": lambda i: (i * 11 - 5).to_bytes(16, "little", signed=True),
         "Nullable(UUID)": _nullable(_uuid),
         "Nullable(FixedString(5))": _nullable(_fixedstring5),
+        # Lengths 0..3, so an empty array and the count varint are both exercised.
+        "Array(UInt64)": lambda i: _array(i, _uint64),
+        "Array(String)": lambda i: _array(i, _string),
+        "Array(DateTime('UTC'))": lambda i: _array(i, _datetime_utc),
+        "Array(UUID)": lambda i: _array(i, _uuid),
+        "Array(Decimal64(2))": lambda i: _array(i, _decimal64),
     }
     header = [_encode_varuint(len(types))]
     header += [_encode_string(f"c{idx}") for idx in range(len(types))]
@@ -973,7 +988,14 @@ def test_compiled_decoder_rejects_a_truncated_row(cut: int):
 
 @pytest.mark.parametrize(
     "ch_type",
-    ["Array(UInt8)", "Map(String, UInt8)", "Tuple(String, UInt8)", "JSON", "Nullable(Array(UInt8))"],
+    [
+        "Map(String, UInt8)",
+        "Tuple(String, UInt8)",
+        "JSON",
+        "Nullable(Array(UInt8))",
+        "Array(Array(UInt8))",
+        "Array(Nullable(UInt8))",
+    ],
 )
 def test_an_uncovered_column_is_not_compiled(ch_type: str):
     assert rowbinary._compiled_row_decoder(("UInt64", ch_type), "UTC", as_tuple=True) is None
