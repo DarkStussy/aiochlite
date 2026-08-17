@@ -31,7 +31,6 @@ class _Reader(Protocol):
     def read_float64(self) -> float: ...
     def read_varuint(self) -> int: ...
     def read_string(self) -> str: ...
-    def read_struct(self, unpack_from: Callable[..., tuple[Any, ...]], size: int) -> tuple[Any, ...]: ...
     def skip(self, size: int): ...
 
     @property
@@ -155,16 +154,6 @@ class _BinaryReader:
         value = self._raw[self._pos : end].decode("utf-8")
         self._pos = end
         return value
-
-    def read_struct(self, unpack_from: Callable[..., tuple[Any, ...]], size: int) -> tuple[Any, ...]:
-        """Decode a run of fixed-width fields with a single struct call."""
-        end = self._pos + size
-        if end > len(self._data):
-            raise _ShortData("Unexpected end of data")
-
-        values = unpack_from(self._data, self._pos)
-        self._pos = end
-        return values
 
     @property
     def eof(self) -> bool:
@@ -616,12 +605,6 @@ _STRUCT_CODES: dict[str, str] = {
 # 16- and 32-byte decimals have no integer code, so they travel as raw bytes and are widened
 # by their converter.
 _DECIMAL_STRUCT_CODES: dict[int, str] = {4: "i", 8: "q", 16: "16s", 32: "32s"}
-
-# Shorter runs keep the plain per-field reader. A fully fixed-width row needs no segments, so
-# two fields already pay off; a mixed row costs one extra call per variable-width column and
-# needs three.
-_MIN_FUSED_FIELDS = 2
-_MIN_SEGMENTED_FUSED_FIELDS = 3
 
 
 def _days_to_date(days: int) -> date:
@@ -1173,118 +1156,6 @@ def _batch_decoder(types: list[str], server_tz: str | None) -> _BatchDecoder | N
     return _row_decoder(types, server_tz, as_tuple=False)
 
 
-def _struct_row_reader(codes: list[str], conv_slots: _ConvSlots) -> Callable[[_Reader], list[Any]]:
-    """Reader for a row that is fixed-width end to end: one struct call per row."""
-    unpacker = struct.Struct(f"<{''.join(codes)}")
-    unpack_from = unpacker.unpack_from
-    size = unpacker.size
-
-    def _read_row(reader: _Reader) -> list[Any]:
-        values = list(reader.read_struct(unpack_from, size))
-        for idx, convert in conv_slots:
-            values[idx] = convert(values[idx])
-        return values
-
-    return _read_row
-
-
-def _struct_segment(codes: list[str], conv_slots: _ConvSlots) -> Callable[[_Reader, list[Any]], None]:
-    """Segment appending one fused run of fixed-width fields."""
-    unpacker = struct.Struct(f"<{''.join(codes)}")
-    unpack_from = unpacker.unpack_from
-    size = unpacker.size
-
-    if not conv_slots:
-
-        def _read_run(reader: _Reader, values: list[Any]) -> None:
-            values += reader.read_struct(unpack_from, size)
-
-        return _read_run
-
-    def _read_converted_run(reader: _Reader, values: list[Any]) -> None:
-        chunk = list(reader.read_struct(unpack_from, size))
-        for idx, convert in conv_slots:
-            chunk[idx] = convert(chunk[idx])
-        values += chunk
-
-    return _read_converted_run
-
-
-def _field_segment(read: Callable[[_Reader], Any]) -> Callable[[_Reader, list[Any]], None]:
-    """Segment appending one column read the ordinary way."""
-
-    def _read_field(reader: _Reader, values: list[Any]) -> None:
-        values.append(read(reader))
-
-    return _read_field
-
-
-def _fixed_runs(fields: list[tuple[str, Callable[[Any], Any] | None] | None]) -> list[list[int]]:
-    """Column indexes grouped into runs of consecutive fixed-width columns."""
-    runs: list[list[int]] = []
-    run: list[int] = []
-    for idx, field in enumerate(fields):
-        if field is None:
-            if run:
-                runs.append(run)
-                run = []
-            continue
-        run.append(idx)
-
-    if run:
-        runs.append(run)
-
-    return runs
-
-
-def _make_row_reader(types: list[str], server_tz: str | None) -> Callable[[_Reader], list[Any]] | None:
-    """Row decoder fusing each run of fixed-width columns into one struct call.
-
-    Returns None when no run is long enough to be worth fusing; the caller then keeps the plain
-    per-field path.
-    """
-    fields = [_fixed_field(tp, server_tz) for tp in types]
-    runs = _fixed_runs(fields)
-
-    def _run_layout(columns: list[int]) -> tuple[list[str], _ConvSlots]:
-        codes: list[str] = []
-        conv_slots: _ConvSlots = []
-        for offset, column in enumerate(columns):
-            field = fields[column]
-            assert field is not None
-            code, convert = field
-            codes.append(code)
-            if convert is not None:
-                conv_slots.append((offset, convert))
-        return codes, conv_slots
-
-    if len(runs) == 1 and len(runs[0]) == len(types) >= _MIN_FUSED_FIELDS:
-        return _struct_row_reader(*_run_layout(runs[0]))
-
-    run_by_start = {run[0]: run for run in runs if len(run) >= _MIN_SEGMENTED_FUSED_FIELDS}
-    if not run_by_start:
-        return None
-
-    segments: list[Callable[[_Reader, list[Any]], None]] = []
-    idx = 0
-    while idx < len(types):
-        columns = run_by_start.get(idx)
-        if columns is not None:
-            segments.append(_struct_segment(*_run_layout(columns)))
-            idx += len(columns)
-            continue
-        segments.append(_field_segment(_reader_for_type(types[idx], server_tz)))
-        idx += 1
-
-    def _read_row(reader: _Reader) -> list[Any]:
-        values: list[Any] = []
-        for segment in segments:
-            segment(reader, values)
-        return values
-
-    return _read_row
-
-
 @overload
 def parse_rowbinary_with_names_and_types(
     data: bytes, server_tz: str | None = ..., *, as_tuple: Literal[False] = ...
@@ -1344,30 +1215,18 @@ def _reader_rows(
     server_tz: str | None,
     as_tuple: bool,
 ) -> Iterable[Any]:
-    """Lazy rows for a payload with at least one variable-width column."""
-    read_row = _make_row_reader(types, server_tz)
+    """Lazy rows for a payload the generator declined every column of."""
+    readers = [_reader_for_type(tp, server_tz) for tp in types]
 
     # Spelled out per path instead of sharing one generator: in this loop an extra call per row
     # costs more than the duplication saves.
-    if read_row is None:
-        readers = [_reader_for_type(tp, server_tz) for tp in types]
+    def _rows() -> Iterable[list[Any]]:
+        while not reader.eof:
+            yield [read(reader) for read in readers]
 
-        def _rows() -> Iterable[list[Any]]:
-            while not reader.eof:
-                yield [read(reader) for read in readers]
-
-        def _tuple_rows() -> Iterable[tuple[Any, ...]]:
-            while not reader.eof:
-                yield tuple([read(reader) for read in readers])
-    else:
-
-        def _rows() -> Iterable[list[Any]]:
-            while not reader.eof:
-                yield read_row(reader)
-
-        def _tuple_rows() -> Iterable[tuple[Any, ...]]:
-            while not reader.eof:
-                yield tuple(read_row(reader))
+    def _tuple_rows() -> Iterable[tuple[Any, ...]]:
+        while not reader.eof:
+            yield tuple([read(reader) for read in readers])
 
     return _tuple_rows() if as_tuple else _rows()
 
@@ -1827,15 +1686,6 @@ class _StreamingReader:
         self._pos += length
         return s
 
-    def read_struct(self, unpack_from: Callable[..., tuple[Any, ...]], size: int) -> tuple[Any, ...]:
-        """Decode a run of fixed-width fields with a single struct call."""
-        end = self._pos + size
-        if end > len(self._buf):
-            raise _NeedMoreData
-        values = unpack_from(self._buf, self._pos)
-        self._pos = end
-        return values
-
 
 class RowBinaryWithNamesAndTypesStreamParser:
     def __init__(self, chunks: AsyncIterator[bytes], *, lazy: bool = False, server_tz: str | None = None):
@@ -1845,7 +1695,6 @@ class RowBinaryWithNamesAndTypesStreamParser:
         self._names: list[str] | None = None
         self._types: list[str] | None = None
         self._readers: list[Callable[[_Reader], Any]] | None = None
-        self._read_row: Callable[[_Reader], list[Any]] | None = None
         self._skippers: list[Callable[[_Reader], None]] | None = None
         self._row_template: tuple[list[int], int] | None = None
         self._batch: _BatchDecoder | None = None
@@ -1877,11 +1726,9 @@ class RowBinaryWithNamesAndTypesStreamParser:
                 if self._lazy:
                     self._row_template = _lazy_row_template(types)
                     self._skippers = None if self._row_template else [_skipper_for_type(tp) for tp in types]
-                    self._read_row = None
                 else:
                     self._skippers = None
                     self._batch = _batch_decoder(types, self._server_tz)
-                    self._read_row = None if self._batch else _make_row_reader(types, self._server_tz)
             except _NeedMoreData:
                 self._reader.pos = checkpoint
                 if not await self._fill():
@@ -1914,7 +1761,6 @@ class RowBinaryWithNamesAndTypesStreamParser:
         # measured at 8% on a String column and worse on the bulk path.
         await self.read_header()
         assert self._readers is not None
-        read_row = self._read_row
 
         if self._batch is not None:
             reader = self._reader
@@ -1942,8 +1788,6 @@ class RowBinaryWithNamesAndTypesStreamParser:
             try:
                 if self._lazy:
                     yield self._lazy_row()
-                elif read_row is not None:
-                    yield read_row(self._reader)
                 else:
                     yield [read(self._reader) for read in self._readers]
 

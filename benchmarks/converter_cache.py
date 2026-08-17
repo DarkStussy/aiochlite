@@ -37,7 +37,7 @@ from typing import Any, NamedTuple
 
 import aiochlite
 from aiochlite.converters import rowbinary
-from aiochlite.converters.rowbinary import _BinaryReader, _make_row_reader
+from aiochlite.converters.rowbinary import _BinaryReader, _row_decoder
 
 CLICKHOUSE_HOST = os.getenv("CLICKHOUSE_HOST", default="localhost")
 CLICKHOUSE_PORT = int(os.getenv("CLICKHOUSE_PORT", default="8123"))
@@ -125,16 +125,21 @@ def _converters_without_cache() -> Iterator[None]:
     """Build converters without memoization for the duration of the block.
 
     `_fixed_field` looks up `_value_cache` at call time, so replacing the name is enough.
-    `_reader_for_type` caches whole readers, so its cache is cleared on both edges.
     """
     original = rowbinary._value_cache
     setattr(rowbinary, "_value_cache", _no_cache)
-    rowbinary._reader_for_type.cache_clear()
+    _clear_caches()
     try:
         yield
     finally:
         setattr(rowbinary, "_value_cache", original)
-        rowbinary._reader_for_type.cache_clear()
+        _clear_caches()
+
+
+def _clear_caches() -> None:
+    """Whole readers and compiled decoders are cached per schema, so both are dropped."""
+    rowbinary._reader_for_type.cache_clear()
+    rowbinary._compiled_row_decoder.cache_clear()
 
 
 def _memoizes(ch_type: str) -> bool:
@@ -147,28 +152,29 @@ def _memoizes(ch_type: str) -> bool:
 
 
 def _build_readers() -> tuple[_Decoder, _Decoder]:
-    """Return decoders for the same schema, one with memoizing converters and one without."""
+    """Return decoders for the same schema, one with memoizing converters and one without.
+
+    Both come from `_row_decoder`, the path a query actually takes for this schema.
+    """
     types = list(COLUMN_TYPES)
 
     with _converters_without_cache():
         if _memoizes("Decimal(18, 2)"):
             raise RuntimeError("Converters are still memoizing; the benchmark would compare nothing")
-        uncached_row = _make_row_reader(types, SERVER_TZ)
+        uncached_row = _row_decoder(types, SERVER_TZ, as_tuple=False)
 
     if not _memoizes("Decimal(18, 2)"):
         raise RuntimeError("Converters lost their cache outside the patch")
-    cached_row = _make_row_reader(types, SERVER_TZ)
+    cached_row = _row_decoder(types, SERVER_TZ, as_tuple=False)
 
     if uncached_row is None or cached_row is None:
-        raise RuntimeError("Schema did not fuse; the converters would not be exercised the same way")
+        raise RuntimeError("Schema is not compiled; the converters would not be exercised the same way")
 
-    def make(read_row: Callable[[Any], list[Any]]) -> _Decoder:
+    def make(decode_rows: Callable[[bytes, int, int], tuple[list[Any], int]]) -> _Decoder:
         def decode(data: bytes, body: int) -> list[Any]:
-            reader = _BinaryReader(data)
-            reader.pos = body
-            rows: list[Any] = []
-            while not reader.eof:
-                rows.append(read_row(reader))
+            rows, pos = decode_rows(data, body, len(data))
+            if pos != len(data):
+                raise RuntimeError("Decoder stopped short of the payload")
             return rows
 
         return decode

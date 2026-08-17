@@ -540,7 +540,7 @@ def _expected_fixed_width_rows() -> list[list[object]]:
     ]
 
 
-def test_parse_rowbinary_fused_fixed_width_run():
+def test_parse_rowbinary_mixed_fixed_and_string_row():
     names, types, rows = parse_rowbinary_with_names_and_types(_fixed_width_payload())
 
     assert names == ["id", "delta", "flag", "ts", "day", "grade", "name"]
@@ -548,8 +548,8 @@ def test_parse_rowbinary_fused_fixed_width_run():
     assert list(rows) == _expected_fixed_width_rows()
 
 
-def test_parse_rowbinary_fused_run_survives_chunk_splits():
-    """A run decoded by a single struct call must still resume across chunk boundaries."""
+def test_parse_rowbinary_mixed_row_survives_chunk_splits():
+    """A row decoded in one pass must still resume across chunk boundaries."""
     payload = _fixed_width_payload()
 
     async def _chunks():
@@ -564,20 +564,20 @@ def test_parse_rowbinary_fused_run_survives_chunk_splits():
     assert asyncio.run(_run()) == _expected_fixed_width_rows()
 
 
-def test_parse_rowbinary_fused_and_unfused_agree(monkeypatch: pytest.MonkeyPatch):
+def test_compiled_and_reader_paths_agree_on_a_mixed_row(monkeypatch: pytest.MonkeyPatch):
     payload = _fixed_width_payload()
     _names, _types, rows = parse_rowbinary_with_names_and_types(payload)
-    fused = list(rows)
+    compiled = list(rows)
 
-    monkeypatch.setattr(rowbinary, "_MIN_FUSED_FIELDS", 10_000)
-    monkeypatch.setattr(rowbinary, "_MIN_SEGMENTED_FUSED_FIELDS", 10_000)
+    monkeypatch.setattr(rowbinary, "_fixed_row_layout", lambda *_, **__: None)
+    monkeypatch.setattr(rowbinary, "_compiled_row_decoder", lambda *_, **__: None)
     _names, _types, rows = parse_rowbinary_with_names_and_types(payload)
 
-    assert fused == list(rows)
+    assert compiled == list(rows)
 
 
-def test_streaming_chunk_ends_exactly_after_fused_run():
-    """The retry must re-read the whole row, not resume after the already decoded run."""
+def test_streaming_chunk_ends_between_columns_of_a_row():
+    """The retry must re-read the whole row, not resume where the chunk ran out."""
     header, rows = _fixed_width_parts()
     first_fixed, first_name = rows[0]
     chunks = [header + first_fixed, first_name + rows[1][0] + rows[1][1]]

@@ -7,6 +7,12 @@
   `ChProtocolError`, because eight `_BinaryReader` methods left the bounds check to `struct` and
   `struct.error` is no `ValueError`. It escaped the decode boundary and reached the caller raw.
 
+### Removed
+- The fixed-width fusion path and its `decode_fusion.py` benchmark. A column is now either emitted
+  inline by the compiled decoder or read through its own closure, and fusion applied to exactly the
+  columns the generator emits inline — over 11,154 type combinations there was no schema left where
+  the compiled decoder declined a row and fusion still applied. All of it was internal.
+
 ### Changed
 - A row that is fixed-width end to end now decodes in a single `struct` pass instead of a Python
   call per row, in `fetch()`, `fetch_rows()` and `stream()`. On 200k rows: 3.5x on five numeric
