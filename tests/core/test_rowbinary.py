@@ -808,7 +808,9 @@ def test_streaming_batches_a_row_of_fixed_and_string_columns():
     assert asyncio.run(_run()) == _expected_fixed_width_rows()
 
 
-def test_streaming_keeps_the_reader_path_when_no_column_is_covered():
+def test_streaming_keeps_the_reader_path_when_no_column_is_covered(monkeypatch: pytest.MonkeyPatch):
+    """Which types compile is tested separately; this is the path a row takes when none does."""
+    monkeypatch.setattr(rowbinary, "_compiled_row_decoder", lambda *_, **__: None)
     parts = [
         _encode_varuint(1),
         _encode_string("tags"),
@@ -840,12 +842,13 @@ def _encode_nested(arrays: list[list[Any]], pack: Callable[[Any], bytes]) -> byt
     )
 
 
-def test_streaming_reader_reads_every_fixed_width_type_across_chunk_splits():
-    """A row of nothing but nested containers, which is the only way to reach these reads.
+def test_streaming_reader_reads_every_fixed_width_type_across_chunk_splits(monkeypatch: pytest.MonkeyPatch):
+    """Every per-type read of `_StreamingReader`, which serves the columns the generator skips.
 
-    The compiled and bulk paths took over every schema the other tests use, leaving
-    `_StreamingReader` to columns the generator emits no code for.
+    The generator is switched off rather than fed types it cannot emit, so the reads stay covered
+    however much of the type space it grows to cover.
     """
+    monkeypatch.setattr(rowbinary, "_compiled_row_decoder", lambda *_, **__: None)
     widths = [("UInt8", 1, False), ("Int8", 1, True), ("UInt16", 2, False), ("Int16", 2, True)]
     widths += [("UInt32", 4, False), ("Int32", 4, True), ("UInt64", 8, False), ("Int64", 8, True)]
     types = [f"Array(Array({name}))" for name, _size, _signed in widths]
@@ -975,6 +978,20 @@ CODEGEN_SCHEMAS = [
     ["Map(String, UInt8)"],
     ["UInt64", "Map(String, UInt64)", "String"],
     ["Map(String, DateTime('UTC'))", "Nullable(String)"],
+    # Containers holding a container or a Nullable, which used to fall to the reader.
+    ["Array(Nullable(UInt64))"],
+    ["Array(Nullable(String))"],
+    ["UInt64", "Array(Nullable(DateTime('UTC')))", "String"],
+    ["Array(Array(UInt8))"],
+    ["Array(Array(String))", "UInt64"],
+    ["Array(Tuple(String, UInt8))"],
+    ["Array(Map(String, UInt8))", "String"],
+    ["Tuple(Nullable(UInt8), String)"],
+    ["Tuple(String, Array(UInt8))", "UInt64"],
+    ["Tuple(Tuple(UInt8, UInt8), String)"],
+    ["Map(String, Nullable(UInt8))"],
+    ["Map(String, Array(UInt8))", "Nullable(String)"],
+    ["Map(String, Map(String, UInt8))"],
 ]
 
 # Empty, one byte, exactly at and either side of the single-byte varint limit, and multi-byte.
@@ -1059,6 +1076,35 @@ def _codegen_payload(types: list[str], rows: int) -> bytes:
         "Array(Array(UInt8))": lambda i: (
             _encode_varuint(i % 3) + b"".join(_encode_varuint(j) + bytes(range(j)) for j in range(i % 3))
         ),
+        # Containers the generator now walks itself rather than handing to a closure.
+        "Array(Nullable(UInt64))": lambda i: _array(i, _nullable(_uint64)),
+        "Array(Nullable(String))": lambda i: _array(i, _nullable(_string)),
+        "Array(Nullable(DateTime('UTC')))": lambda i: _array(i, _nullable(_datetime_utc)),
+        "Array(Array(String))": lambda i: _encode_varuint(i % 3) + b"".join(_array(j, _string) for j in range(i % 3)),
+        "Array(Tuple(String, UInt8))": lambda i: _array(i, lambda j: _string(j) + bytes([j % 256])),
+        "Array(Map(String, UInt8))": lambda i: _array(
+            i, lambda j: _encode_varuint(j % 3) + b"".join(_encode_string(f"k{n}") + bytes([n]) for n in range(j % 3))
+        ),
+        "Tuple(Nullable(UInt8), String)": lambda i: _nullable(lambda j: bytes([j % 256]))(i) + _string(i),
+        "Tuple(String, Array(UInt8))": lambda i: _string(i) + _array(i, lambda j: bytes([j % 256])),
+        "Tuple(Tuple(UInt8, UInt8), String)": lambda i: bytes([i % 256, (i + 1) % 256]) + _string(i),
+        "Map(String, Nullable(UInt8))": lambda i: (
+            _encode_varuint(i % 3)
+            + b"".join(_encode_string(f"k{j}") + _nullable(lambda n: bytes([n % 256]))(j) for j in range(i % 3))
+        ),
+        "Map(String, Array(UInt8))": lambda i: (
+            _encode_varuint(i % 3)
+            + b"".join(_encode_string(f"k{j}") + _array(j, lambda n: bytes([n % 256])) for j in range(i % 3))
+        ),
+        "Map(String, Map(String, UInt8))": lambda i: (
+            _encode_varuint(i % 3)
+            + b"".join(
+                _encode_string(f"k{j}")
+                + _encode_varuint(j % 2)
+                + b"".join(_encode_string(f"n{n}") + bytes([n]) for n in range(j % 2))
+                for j in range(i % 3)
+            )
+        ),
     }
     header = [_encode_varuint(len(types))]
     header += [_encode_string(f"c{idx}") for idx in range(len(types))]
@@ -1091,10 +1137,11 @@ def test_compiled_decoder_rejects_a_truncated_row(cut: int):
 
 UNCOVERED_TYPES = [
     "JSON",
-    "Array(Array(UInt8))",
-    "Array(Nullable(UInt8))",
-    "Tuple(String, Array(UInt8))",
-    "Map(String, Array(UInt8))",
+    "Array(JSON)",
+    "Map(String, JSON)",
+    # Past `_MAX_CODEGEN_DEPTH`, where each further level would multiply the code emitted.
+    "Array(Array(Array(Array(Array(UInt8)))))",
+    "Map(String, Array(Array(Array(Array(UInt8)))))",
 ]
 
 

@@ -27,15 +27,19 @@
   compiled path. A row whose every column needs a closure is left to the reader path. The compiled code is
   cached per schema; the converters it uses are not, so their per-query caches are still released
   with the query.
-- A `Map` of flat keys and values now decodes through a loop compiled for its pair, instead of a
-  reader call per key and per value. On 100k rows of three pairs: 2.1x for `Map(String, UInt8)`,
-  2.3x for `Map(String, String)`. A `Map` holding a container keeps the reader path.
+- A `Map` now decodes through a loop compiled for its pair, instead of a reader call per key and
+  per value. On 100k rows of three pairs: 2.1x for `Map(String, UInt8)`, 2.3x for
+  `Map(String, String)`.
 - An `Array` of fixed-width elements now decodes with one `struct` call for the whole array
   instead of a reader call per element, and an `Array(String)` with one call per array. On 100k
   rows: 6.0x on `Array(UInt64)` of 20 elements, 3.8x of 3, 4.0x on
-  `UInt64, Array(Decimal64(2)), String`, 1.6x on `Array(String)`. A nested `Array`, an
-  `Array(Nullable(...))` and an `Array(Tuple(...))` keep the reader path, as does `JSON`, whose
-  decode is over 90% `json.loads` and gains nothing from compiling the walk around it.
+  `UInt64, Array(Decimal64(2)), String`, 1.6x on `Array(String)`.
+- A container holding another container, or a `Nullable`, is now compiled too, rather than left
+  whole to the reader: `Array(Nullable(...))`, `Array(Array(...))`, `Array(Tuple(...))`,
+  `Array(Map(...))`, and `Tuple` or `Map` with any of those inside. On 100k rows of
+  `UInt64, Array(Array(UInt8)), Map(String, Array(UInt8)), Array(Nullable(UInt64))`: 2.1x
+  end to end. Nesting deeper than four levels, and `JSON`, keep the reader path; `JSON` decode is
+  over 90% `json.loads` and gains nothing from compiling the walk around it.
 - `UUID`, `IPv6`, `FixedString` and `Decimal` past 64 bits now count as fixed-width wherever the
   two paths above look for one, having previously been read one column at a time. They travel as
   raw bytes through a `Ns` struct code and are widened by their converter. On 200k rows of

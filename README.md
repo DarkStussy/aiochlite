@@ -488,9 +488,10 @@ Versions: `aiochlite` 1.7.0, `clickhouse-connect` 1.7.1, `aiochclient` 2.7.0, Py
 and ClickHouse 26.3.17.110.
 
 The query selects `UInt64, DateTime, Tuple(String, UInt16), Array(Decimal(10, 2))`, every column of
-which aiochlite decodes through a loop compiled for that schema. A column outside what the generator
-emits — `JSON` or a nested container such as `Array(Array(UInt8))`, say — reads through its own
-closure instead, and that column is as fast as it was before.
+which aiochlite decodes through a loop compiled for that schema, as it does for every scalar,
+`Nullable`, `Array`, `Tuple` and `Map`, nested up to four levels deep. A column outside that —
+`JSON`, or nesting deeper still — reads through its own closure instead, and that column is as fast
+as it was before.
 
 `clickhouse-connect` includes compiled C extensions. `aiochlite` is pure Python with a single
 dependency, `aiohttp`, and reaches the same throughput by compiling a decoder for the schema at hand.

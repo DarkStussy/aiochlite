@@ -838,30 +838,30 @@ def _codegen_value_type(ch_type: str) -> str:
     return unwrapped
 
 
-def _codegen_nullable_kind(inner_type: str, server_tz: str | None) -> tuple[str, Any]:
-    inner = _codegen_kind(inner_type, server_tz)
-    # Only what `_emit_nullable` can nest. ClickHouse rejects `Nullable(Array(...))` anyway, but
-    # an unhandled kind here would silently emit a decoder for the wrong shape.
-    return ("nullable", inner) if inner is not None and inner[0] in {"fixed", "string"} else ("reader", None)
+def _codegen_nullable_kind(inner_type: str, server_tz: str | None, depth: int) -> tuple[str, Any]:
+    inner = _codegen_kind(inner_type, server_tz, depth)
+    return ("reader", None) if inner is None or inner[0] == "reader" else ("nullable", (inner_type, inner))
 
 
-def _codegen_array_kind(element_type: str, server_tz: str | None) -> tuple[str, Any]:
+def _codegen_array_kind(element_type: str, server_tz: str | None, depth: int) -> tuple[str, Any]:
     element = _strip_low_cardinality(element_type)
     if element == "String":
         return "array_string", None
 
-    # Only a flat array of a fixed-width type: anything deeper would need the generator to nest,
-    # and the reader path handles it well enough.
+    # A flat array reads in one struct call, which beats any per-element loop.
     field = _fixed_field(element, server_tz)
-    return ("array_fixed", field[0]) if field is not None else ("reader", None)
+    if field is not None:
+        return "array_fixed", field[0]
+
+    kind = _codegen_kind(element_type, server_tz, depth)
+    return ("reader", None) if kind is None or kind[0] == "reader" else ("array", (element_type, kind))
 
 
-def _codegen_tuple_kind(element_types: str, server_tz: str | None) -> tuple[str, Any]:
+def _codegen_tuple_kind(element_types: str, server_tz: str | None, depth: int) -> tuple[str, Any]:
     elements: list[tuple[str, str, Any]] = []
     for element in split_type_arguments(element_types):
-        kind = _codegen_kind(element, server_tz)
-        # Only flat elements, for the same reason as arrays.
-        if kind is None or kind[0] not in {"fixed", "string"}:
+        kind = _codegen_kind(element, server_tz, depth)
+        if kind is None or kind[0] == "reader":
             return "reader", None
 
         elements.append((element, kind[0], kind[1]))
@@ -869,16 +869,15 @@ def _codegen_tuple_kind(element_types: str, server_tz: str | None) -> tuple[str,
     return ("tuple", elements) if elements else ("reader", None)
 
 
-def _codegen_map_kind(pair_types: str, server_tz: str | None) -> tuple[str, Any]:
+def _codegen_map_kind(pair_types: str, server_tz: str | None, depth: int) -> tuple[str, Any]:
     pair = split_type_arguments(pair_types)
     if len(pair) != 2:
         return "reader", None
 
     entries: list[tuple[str, str, Any]] = []
     for element in pair:
-        kind = _codegen_kind(element, server_tz)
-        # Only flat key and value, for the same reason as arrays.
-        if kind is None or kind[0] not in {"fixed", "string"}:
+        kind = _codegen_kind(element, server_tz, depth)
+        if kind is None or kind[0] == "reader":
             return "reader", None
 
         entries.append((element, kind[0], kind[1]))
@@ -886,23 +885,29 @@ def _codegen_map_kind(pair_types: str, server_tz: str | None) -> tuple[str, Any]
     return "map", entries
 
 
-_CODEGEN_CONTAINERS: dict[str, Callable[[str, str | None], tuple[str, Any]]] = {
+_CODEGEN_CONTAINERS: dict[str, Callable[[str, str | None, int], tuple[str, Any]]] = {
     "Nullable(": _codegen_nullable_kind,
     "Array(": _codegen_array_kind,
     "Tuple(": _codegen_tuple_kind,
     "Map(": _codegen_map_kind,
 }
 
+# Containers deep enough to nest this far are rare, and each level multiplies the code emitted.
+_MAX_CODEGEN_DEPTH = 4
 
-def _codegen_kind(ch_type: str, server_tz: str | None) -> tuple[str, Any] | None:
+
+def _codegen_kind(ch_type: str, server_tz: str | None, depth: int = 0) -> tuple[str, Any] | None:
     """How the generator emits this column: `("fixed", code)`, `("string", None)`, `("nullable",
-    inner)`, `("array_fixed", code)`, `("array_string", None)`, `("tuple", elements)`, or
-    `("reader", None)` for a column read through its own closure."""
+    inner)`, `("array_fixed", code)`, `("array_string", None)`, `("array", element)`, `("tuple",
+    elements)`, `("map", entries)`, or `("reader", None)` for one read through its own closure."""
     unwrapped = _strip_low_cardinality(ch_type)
 
     for prefix, build in _CODEGEN_CONTAINERS.items():
         if unwrapped.startswith(prefix) and unwrapped.endswith(")"):
-            return build(unwrapped[len(prefix) : -1], server_tz)
+            if depth >= _MAX_CODEGEN_DEPTH:
+                return "reader", None
+
+            return build(unwrapped[len(prefix) : -1], server_tz, depth + 1)
 
     field = _fixed_field(unwrapped, server_tz)
     if field is not None:
@@ -989,9 +994,9 @@ def _emit_reader(slot: str, indent: str, short: str) -> list[str]:
     ]
 
 
-def _emit_nullable(slot: str, inner: tuple[str, Any], converted: set[str], indent: str, short: str) -> list[str]:
-    # The short-data statement inside the else still leaves the loop it belongs to.
-    lines = [
+def _emit_null_flag(slot: str, indent: str, short: str) -> list[str]:
+    """The flag byte; the value itself follows in the `else`."""
+    return [
         f"{indent}if p >= end: {short}",
         f"{indent}_n = data[p]",
         f"{indent}p += 1",
@@ -999,12 +1004,6 @@ def _emit_nullable(slot: str, inner: tuple[str, Any], converted: set[str], inden
         f"{indent}    v{slot} = None",
         f"{indent}else:",
     ]
-    nested = f"{indent}    "
-    if inner[0] == "string":
-        return lines + _emit_string(slot, nested, short)
-
-    assert inner[0] == "fixed", inner[0]
-    return lines + _emit_fixed_run([slot], inner[1], converted, nested, short)
 
 
 class _Emitter:
@@ -1060,8 +1059,9 @@ class _Emitter:
         indent: str,
         short: str,
     ) -> tuple[list[str], int]:
+        # Only the emitters that apply `_c{slot}` register one; the rest reach their converters
+        # through the elements they emit.
         if kinds[index][0] != "fixed":
-            self._register_converter(slots[index], types[index])
             return self._emit_scalar(slots[index], kinds[index], types[index], indent, short), index + 1
 
         # Consecutive fixed-width columns share one struct call, as in the bulk path.
@@ -1088,24 +1088,47 @@ class _Emitter:
             return _emit_array_string(slot, indent, short)
 
         if kind[0] == "array_fixed":
+            self._register_converter(slot, ch_type)
             self.namespace[f"_u{slot}"] = _ArrayUnpackers(kind[1])
             return _emit_array_fixed(slot, kind[1], self.converted, indent, short)
 
         if kind[0] == "nullable":
             # The null flag makes the width vary, so the column cannot join a run.
-            if kind[1][0] == "fixed":
-                self.namespace[f"_s{slot}"] = struct.Struct(f"<{kind[1][1]}").unpack_from
-            return _emit_nullable(slot, kind[1], self.converted, indent, short)
+            inner_type, inner_kind = kind[1]
+            nested = f"{indent}    "
+            return _emit_null_flag(slot, indent, short) + self.emit([slot], [inner_type], [inner_kind], nested, short)
 
         return self._emit_grouped(slot, kind, indent, short)
 
     def _emit_grouped(self, slot: str, kind: tuple[str, Any], indent: str, short: str) -> list[str]:
         """A container whose elements are emitted as a group of their own."""
+        if kind[0] == "array":
+            return self._emit_array(slot, kind[1], indent, short)
+
         if kind[0] == "map":
             return self._emit_map(slot, kind[1], indent, short)
 
         assert kind[0] == "tuple", kind[0]
         return self._emit_tuple(slot, kind[1], indent, short)
+
+    def _emit_array(self, slot: str, element: tuple[str, tuple[str, Any]], indent: str, short: str) -> list[str]:
+        """An element the generator has to walk, so the loop goes into a helper like a map's."""
+        element_type, element_kind = element
+        body = self.emit([f"{slot}_e"], [element_type], [element_kind], "        ", "return None, p")
+        self.prelude += [
+            f"def _a{slot}(data, p, count, end):",
+            "    out = []",
+            "    for _ in range(count):",
+            *body,
+            f"        out.append(v{slot}_e)",
+            "    return out, p",
+            "",
+        ]
+        return [
+            *_emit_varuint(indent, short),
+            f"{indent}v{slot}, p = _a{slot}(data, p, _l, end)",
+            f"{indent}if v{slot} is None: {short}",
+        ]
 
     def _emit_tuple(self, slot: str, elements: list[tuple[str, str, Any]], indent: str, short: str) -> list[str]:
         """A tuple carries no count, so its elements are just more columns sharing the row."""
