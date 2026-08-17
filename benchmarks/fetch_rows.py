@@ -78,6 +78,25 @@ def _flat_checksum_tuples(rows: Sequence[Sequence[Any]]) -> int:
     return total
 
 
+_TEXT_COLUMNS = tuple(f"s{index}" for index in range(9))
+
+
+def _text_checksum(rows: Sequence[_RowLike]) -> int:
+    total = 0
+    for row in rows:
+        total += int(row["id"])
+        total += sum(len(row[name]) for name in _TEXT_COLUMNS)
+    return total
+
+
+def _text_checksum_tuples(rows: Sequence[Sequence[Any]]) -> int:
+    total = 0
+    for row in rows:
+        total += int(row[0])
+        total += sum(len(value) for value in row[1:])
+    return total
+
+
 def _nested_checksum(rows: Sequence[_RowLike]) -> int:
     total = 0
     for row in rows:
@@ -135,6 +154,17 @@ SCHEMAS: tuple[Schema, ...] = (
         select="id, event_time, payload, prices",
         checksum=_flat_checksum,
         checksum_tuples=_flat_checksum_tuples,
+    ),
+    Schema(
+        label="wide strings",
+        columns="id UInt64, " + ", ".join(f"{name} String" for name in _TEXT_COLUMNS),
+        generate="number as id, "
+        + ", ".join(
+            f"concat('v{index}-', toString(number % 500)) as {name}" for index, name in enumerate(_TEXT_COLUMNS)
+        ),
+        select="id, " + ", ".join(_TEXT_COLUMNS),
+        checksum=_text_checksum,
+        checksum_tuples=_text_checksum_tuples,
     ),
     Schema(
         label="nested containers",
