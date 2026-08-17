@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.7.0 (2026-08-17)
 
 ### Fixed
 - A response truncated in the middle of a fixed-width value raised `struct.error` instead of
