@@ -59,7 +59,7 @@ A small, pure-Python async client for ClickHouse over HTTP. Results are decoded 
 **Choosing a client.** For DataFrame integrations, or for column-oriented results, use the official
 [clickhouse-connect](https://github.com/ClickHouse/clickhouse-connect): it also has a real asyncio
 client, and it returns numpy, pandas, Arrow and Polars. On the benchmark below `fetch_rows()` now
-matches it and `fetch()` is 20% behind, the difference being the `Row` wrapper. Reach for aiochlite
+matches it and `fetch()` is 26% behind, the difference being the `Row` wrapper. Reach for aiochlite
 when you want a small async client with a single dependency that just returns rows.
 
 ## Installation
@@ -479,12 +479,12 @@ Latest fetch-and-decode results for 100,000 rows (5 rounds, measured 2026-08-17)
 
 | Client | Average | Throughput | Time per row |
 | --- | ---: | ---: | ---: |
-| `clickhouse-connect` (async) | 164.09 ms | 609,408 rows/s | 1.6 µs |
-| `aiochlite` (tuples) | 165.43 ms | 604,501 rows/s | 1.7 µs |
-| `aiochlite` (`Row`) | 202.11 ms | 494,770 rows/s | 2.0 µs |
-| `aiochclient` | 367.07 ms | 272,427 rows/s | 3.7 µs |
+| `clickhouse-connect` (async) | 165.02 ms | 605,978 rows/s | 1.7 µs |
+| `aiochlite` (tuples) | 166.60 ms | 600,228 rows/s | 1.7 µs |
+| `aiochlite` (`Row`) | 207.57 ms | 481,759 rows/s | 2.1 µs |
+| `aiochclient` | 365.57 ms | 273,544 rows/s | 3.7 µs |
 
-Versions: `aiochlite` 1.6.0, `clickhouse-connect` 1.7.1, `aiochclient` 2.7.0, Python 3.14.5,
+Versions: `aiochlite` 1.7.0, `clickhouse-connect` 1.7.1, `aiochclient` 2.7.0, Python 3.14.5,
 and ClickHouse 26.3.17.110.
 
 The query selects `UInt64, DateTime, Tuple(String, UInt16), Array(Decimal(10, 2))`, every column of

@@ -68,42 +68,42 @@ Environment variables:
 Measured 2026-08-17.
 
 ```
-Clients: aiochlite 1.6.0, aiochclient 2.7.0, clickhouse-connect 1.7.1
+Clients: aiochlite 1.7.0, aiochclient 2.7.0, clickhouse-connect 1.7.1
 Python: 3.14.5, ClickHouse: 26.3.17.110
 Rows: 100000, rounds: 5, warmup: 2
-Table: bench_io_8a1af16915e54010ba65fe7fdc4e013c
+Table: bench_io_161df20e45144d1caaf710f018b27da4
 
 IO benchmark (clickhouse-connect (async))
-Round 1:   171.97 ms (581,500 rows/s, 1.7 µs/row)
-Round 2:   162.36 ms (615,921 rows/s, 1.6 µs/row)
-Round 3:   169.83 ms (588,810 rows/s, 1.7 µs/row)
-Round 4:   159.66 ms (626,341 rows/s, 1.6 µs/row)
-Round 5:   156.65 ms (638,370 rows/s, 1.6 µs/row)
-Avg:       164.09 ms (609,408 rows/s, 1.6 µs/row)
+Round 1:   171.93 ms (581,638 rows/s, 1.7 µs/row)
+Round 2:   176.51 ms (566,536 rows/s, 1.8 µs/row)
+Round 3:   160.21 ms (624,181 rows/s, 1.6 µs/row)
+Round 4:   158.37 ms (631,420 rows/s, 1.6 µs/row)
+Round 5:   158.09 ms (632,552 rows/s, 1.6 µs/row)
+Avg:       165.02 ms (605,978 rows/s, 1.7 µs/row)
 
 IO benchmark (aiochlite (Row))
-Round 1:   196.90 ms (507,865 rows/s, 2.0 µs/row)
-Round 2:   208.32 ms (480,035 rows/s, 2.1 µs/row)
-Round 3:   201.75 ms (495,652 rows/s, 2.0 µs/row)
-Round 4:   195.17 ms (512,380 rows/s, 2.0 µs/row)
-Round 5:   208.43 ms (479,781 rows/s, 2.1 µs/row)
-Avg:       202.11 ms (494,770 rows/s, 2.0 µs/row)
+Round 1:   219.15 ms (456,310 rows/s, 2.2 µs/row)
+Round 2:   200.60 ms (498,498 rows/s, 2.0 µs/row)
+Round 3:   196.46 ms (509,008 rows/s, 2.0 µs/row)
+Round 4:   223.52 ms (447,379 rows/s, 2.2 µs/row)
+Round 5:   198.13 ms (504,724 rows/s, 2.0 µs/row)
+Avg:       207.57 ms (481,759 rows/s, 2.1 µs/row)
 
 IO benchmark (aiochlite (tuples))
-Round 1:   164.17 ms (609,141 rows/s, 1.6 µs/row)
-Round 2:   164.83 ms (606,671 rows/s, 1.6 µs/row)
-Round 3:   165.00 ms (606,076 rows/s, 1.6 µs/row)
-Round 4:   165.92 ms (602,683 rows/s, 1.7 µs/row)
-Round 5:   167.21 ms (598,055 rows/s, 1.7 µs/row)
-Avg:       165.43 ms (604,501 rows/s, 1.7 µs/row)
+Round 1:   166.34 ms (601,187 rows/s, 1.7 µs/row)
+Round 2:   165.57 ms (603,984 rows/s, 1.7 µs/row)
+Round 3:   164.75 ms (606,973 rows/s, 1.6 µs/row)
+Round 4:   164.96 ms (606,211 rows/s, 1.6 µs/row)
+Round 5:   171.40 ms (583,425 rows/s, 1.7 µs/row)
+Avg:       166.60 ms (600,228 rows/s, 1.7 µs/row)
 
 IO benchmark (aiochclient)
-Round 1:   365.63 ms (273,504 rows/s, 3.7 µs/row)
-Round 2:   365.80 ms (273,373 rows/s, 3.7 µs/row)
-Round 3:   366.52 ms (272,833 rows/s, 3.7 µs/row)
-Round 4:   368.75 ms (271,188 rows/s, 3.7 µs/row)
-Round 5:   368.66 ms (271,256 rows/s, 3.7 µs/row)
-Avg:       367.07 ms (272,427 rows/s, 3.7 µs/row)
+Round 1:   363.21 ms (275,322 rows/s, 3.6 µs/row)
+Round 2:   369.87 ms (270,365 rows/s, 3.7 µs/row)
+Round 3:   369.62 ms (270,547 rows/s, 3.7 µs/row)
+Round 4:   362.14 ms (276,139 rows/s, 3.6 µs/row)
+Round 5:   363.02 ms (275,466 rows/s, 3.6 µs/row)
+Avg:       365.57 ms (273,544 rows/s, 3.7 µs/row)
 ```
 
 Repeat runs of the same configuration produced averages within approximately 2% of these results.
@@ -139,7 +139,7 @@ Run:
 Measured 2026-08-17.
 
 ```
-aiochlite 1.6.0 @ cc7c49c
+aiochlite 1.7.0 @ ef5793a
 CPU: AMD Ryzen 7 9800X3D 8-Core Processor
 OS: Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39
 Python: 3.14.5 (CPython)
@@ -148,18 +148,18 @@ Rows: 200000, rounds: 7, warmup: 2
 ClickHouse: 26.3.17.110
 
 Low cardinality — 200 distinct timestamps, 100 distinct prices
-  Cached:   median   23.85 ms  [23.84, 24.58, 22.75, 24.90, 23.01, 25.40, 23.85]
-  Uncached: median  116.65 ms  [114.97, 115.08, 127.12, 119.65, 116.65, 114.97, 117.13]
-  Cache changes decode time by -79.6%
+  Cached:   median   23.55 ms  [24.17, 23.55, 23.23, 25.09, 23.72, 23.53, 23.21]
+  Uncached: median  117.86 ms  [118.97, 117.84, 119.22, 117.86, 118.21, 116.49, 115.26]
+  Cache changes decode time by -80.0%
 
 High cardinality — every timestamp and price distinct
-  Cached:   median  169.95 ms  [174.74, 165.97, 172.83, 169.95, 170.06, 166.10, 162.86]
-  Uncached: median  119.66 ms  [128.28, 116.61, 124.70, 114.41, 119.66, 120.93, 118.85]
-  Cache changes decode time by +42.0%
+  Cached:   median  166.44 ms  [166.17, 165.96, 168.29, 166.44, 163.86, 172.39, 170.74]
+  Uncached: median  115.72 ms  [115.72, 115.10, 114.84, 114.97, 120.08, 119.10, 119.82]
+  Cache changes decode time by +43.8%
 ```
 
 The two sides of the trade are both large here: repeated values make the cache save 80%, all-distinct values
-make it cost 42%. Two of the three columns go through a converter, so conversion dominates the decode; on a wide
+make it cost 44%. Two of the three columns go through a converter, so conversion dominates the decode; on a wide
 schema where one column in ten is a `DateTime` both numbers shrink. Measure it rather than assume it.
 
 The decoders are rebuilt every round on purpose. Sharing one across rounds leaves its cache warm from the round
