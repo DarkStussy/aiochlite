@@ -50,17 +50,17 @@ A small, pure-Python async client for ClickHouse over HTTP. Results are decoded 
 - **One dependency**: `aiohttp`, joined by `tzdata` on Windows, which ships no timezone
   database of its own. aiochlite itself ships no compiled extensions.
 - **Server-side query parameters**: values are sent as ClickHouse `param_*` and never interpolated into the query text.
-- **Fast for pure Python**: in the [benchmark below](#benchmarks), where every client runs in its default configuration, `fetch_rows()` spends 24% less time than `aiochclient` and `fetch()` 16% less.
+- **Fast for pure Python**: in the [benchmark below](#benchmarks), where every client runs in its default configuration, `fetch_rows()` matches `clickhouse-connect` and its compiled C parser, and spends 55% less time than `aiochclient`.
 - **Typed**: complete type hints for IDEs and static type checkers.
 - **Focused API**: ClickHouse over HTTP, without pandas, numpy, Arrow or Polars integrations.
 - **Tested** on Python 3.12–3.14 against ClickHouse 26.3, with additional compatibility coverage
   for ClickHouse 25.8 LTS.
 
-**Choosing a client.** For maximum throughput or DataFrame integrations, use the official
+**Choosing a client.** For DataFrame integrations, or for column-oriented results, use the official
 [clickhouse-connect](https://github.com/ClickHouse/clickhouse-connect): it also has a real asyncio
-client, and in the same benchmark its compiled parser is 1.7x faster than `fetch_rows()` and 1.9x
-faster than `fetch()`. Reach for aiochlite when you want a small async client with a single
-dependency that just returns rows.
+client, and it returns numpy, pandas, Arrow and Polars. On the benchmark below `fetch_rows()` now
+matches it and `fetch()` is 20% behind, the difference being the `Row` wrapper. Reach for aiochlite
+when you want a small async client with a single dependency that just returns rows.
 
 ## Installation
 
@@ -475,20 +475,25 @@ Benchmark scripts live in [benchmarks/](benchmarks/).
 > `aiochclient` decodes `TSVWithNamesAndTypes`, `clickhouse-connect` decodes `Native`, and aiochlite decodes
 > `RowBinaryWithNamesAndTypes`. Part of the difference is the wire format rather than the decoder around it.
 
-Latest fetch-and-decode results for 100,000 rows (5 rounds, measured 2026-08-14):
+Latest fetch-and-decode results for 100,000 rows (5 rounds, measured 2026-08-17):
 
 | Client | Average | Throughput | Time per row |
 | --- | ---: | ---: | ---: |
-| `clickhouse-connect` (async) | 161.19 ms | 620,388 rows/s | 1.6 µs |
-| `aiochlite` (tuples) | 275.79 ms | 362,598 rows/s | 2.8 µs |
-| `aiochlite` (`Row`) | 303.41 ms | 329,584 rows/s | 3.0 µs |
-| `aiochclient` | 363.21 ms | 275,324 rows/s | 3.6 µs |
+| `clickhouse-connect` (async) | 164.09 ms | 609,408 rows/s | 1.6 µs |
+| `aiochlite` (tuples) | 165.43 ms | 604,501 rows/s | 1.7 µs |
+| `aiochlite` (`Row`) | 202.11 ms | 494,770 rows/s | 2.0 µs |
+| `aiochclient` | 367.07 ms | 272,427 rows/s | 3.7 µs |
 
-Versions: `aiochlite` 1.4.0, `clickhouse-connect` 1.7.1, `aiochclient` 2.7.0, Python 3.14.5,
+Versions: `aiochlite` 1.6.0, `clickhouse-connect` 1.7.1, `aiochclient` 2.7.0, Python 3.14.5,
 and ClickHouse 26.3.17.110.
 
-`clickhouse-connect` includes compiled C extensions. In contrast, `aiochlite` is pure Python and has a single
-dependency: `aiohttp`.
+The query selects `UInt64, DateTime, Tuple(String, UInt16), Array(Decimal(10, 2))`, every column of
+which aiochlite decodes through a loop compiled for that schema. A column outside what the generator
+emits — `Map` or `JSON`, say — reads through its own closure instead, and that column is as fast as
+it was before.
+
+`clickhouse-connect` includes compiled C extensions. `aiochlite` is pure Python with a single
+dependency, `aiohttp`, and reaches the same throughput by compiling a decoder for the schema at hand.
 
 ## License
 

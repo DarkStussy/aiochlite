@@ -203,17 +203,21 @@ def _time_once(decode: _Decoder, data: bytes, body: int, expected_rows: int) -> 
     return duration
 
 
-def _measure(
-    cached: _Decoder, uncached: _Decoder, data: bytes, body: int, rows: int
-) -> tuple[list[float], list[float]]:
-    """Time both decoders, alternating which one runs first."""
+def _measure(data: bytes, body: int, rows: int) -> tuple[list[float], list[float]]:
+    """Time both decoders, alternating which one runs first.
+
+    The decoders are rebuilt every round. Their caches would otherwise stay warm from the round
+    before, and the high-cardinality case would report hits where one query has only misses.
+    """
     for _ in range(BENCH_WARMUP):
+        cached, uncached = _build_readers()
         _time_once(cached, data, body, rows)
         _time_once(uncached, data, body, rows)
 
     cached_times: list[float] = []
     uncached_times: list[float] = []
     for round_index in range(BENCH_ROUNDS):
+        cached, uncached = _build_readers()
         if round_index % 2:
             uncached_times.append(_time_once(uncached, data, body, rows))
             cached_times.append(_time_once(cached, data, body, rows))
@@ -249,18 +253,17 @@ async def main() -> None:
         server_version: str = await client.fetchval("SELECT version()")
         print(f"ClickHouse: {server_version}")
 
-        cached, uncached = _build_readers()
-
         for case in CASES:
             payload = await client.fetch_format(case.query.format(rows=BENCH_ROWS), "RowBinaryWithNamesAndTypes")
             types, body = _read_header(payload)
             if tuple(types) != COLUMN_TYPES:
                 raise RuntimeError(f"Server returned {types}, expected {list(COLUMN_TYPES)}")
 
+            cached, uncached = _build_readers()
             if cached(payload, body) != uncached(payload, body):
                 raise RuntimeError("Cached and uncached decoders disagree")
 
-            cached_times, uncached_times = _measure(cached, uncached, payload, body, BENCH_ROWS)
+            cached_times, uncached_times = _measure(payload, body, BENCH_ROWS)
             cached_median = statistics.median(cached_times)
             uncached_median = statistics.median(uncached_times)
 
