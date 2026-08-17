@@ -865,6 +865,28 @@ def test_value_cache_keeps_entries_past_the_bound_of_the_shared_cache():
     assert converted == len(values)
 
 
+def test_value_cache_stays_within_its_bound(monkeypatch: pytest.MonkeyPatch):
+    """`stream()` holds the cache for the whole result, so it cannot grow with it."""
+    monkeypatch.setattr(rowbinary, "_QUERY_VALUE_CACHE_SIZE", 4)
+    cache = rowbinary._ValueCache(str)
+
+    for value in range(100):
+        assert cache[value] == str(value)
+        assert len(cache) <= 4
+
+
+def test_value_cache_full_starts_over_rather_than_freezing(monkeypatch: pytest.MonkeyPatch):
+    """Freezing keeps whatever it saw first, so a working set that moves would miss forever."""
+    monkeypatch.setattr(rowbinary, "_QUERY_VALUE_CACHE_SIZE", 4)
+    cache = rowbinary._ValueCache(str)
+
+    for value in range(4):
+        cache[value]
+    cache[100]
+
+    assert dict(cache) == {100: "100"}
+
+
 CODEGEN_SCHEMAS = [
     ["String"],
     ["UInt64", "String"],

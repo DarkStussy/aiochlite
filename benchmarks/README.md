@@ -118,9 +118,9 @@ What it measures:
 - Both decoders come from `_row_decoder`, the compiled path a query takes for this schema, so the conversion is
   measured against the decode that really surrounds it.
 - Fixed-width columns such as `DateTime` and `Decimal` arrive as integers and are turned into Python objects by a
-  converter. Converters built per query memoize through `_value_cache`, which holds every distinct value the query
-  produced and is released with it. Only converters reached through `_reader_for_type`, which outlive the query
-  that built them, keep a bound (`_VALUE_CACHE_SIZE`).
+  converter. Converters built per query memoize through `_value_cache`, which holds up to
+  `_QUERY_VALUE_CACHE_SIZE` values per column and is released with the query. Converters reached through
+  `_reader_for_type` outlive the query that built them and keep their own bound (`_VALUE_CACHE_SIZE`).
 - The same schema is decoded twice, by a row reader whose converters memoize and by one whose converters do not.
   The uncached variant is built by neutralizing `_value_cache` while the converters are created, so both readers
   run identical conversion logic; the script asserts the patch took effect and that both decoders agree.
@@ -139,7 +139,7 @@ Run:
 Measured 2026-08-17.
 
 ```
-aiochlite 1.6.0 @ 0dc16e1
+aiochlite 1.6.0 @ cc7c49c
 CPU: AMD Ryzen 7 9800X3D 8-Core Processor
 OS: Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39
 Python: 3.14.5 (CPython)
@@ -148,25 +148,45 @@ Rows: 200000, rounds: 7, warmup: 2
 ClickHouse: 26.3.17.110
 
 Low cardinality — 200 distinct timestamps, 100 distinct prices
-  Cached:   median   22.91 ms  [23.11, 22.91, 22.61, 22.92, 22.52, 23.30, 22.61]
-  Uncached: median  117.26 ms  [116.79, 117.26, 118.23, 124.67, 115.48, 115.27, 120.18]
-  Cache changes decode time by -80.5%
+  Cached:   median   23.85 ms  [23.84, 24.58, 22.75, 24.90, 23.01, 25.40, 23.85]
+  Uncached: median  116.65 ms  [114.97, 115.08, 127.12, 119.65, 116.65, 114.97, 117.13]
+  Cache changes decode time by -79.6%
 
 High cardinality — every timestamp and price distinct
-  Cached:   median  176.66 ms  [185.20, 190.57, 173.56, 184.32, 172.30, 176.66, 170.87]
-  Uncached: median  127.68 ms  [143.86, 127.68, 122.65, 134.90, 139.99, 123.79, 125.26]
-  Cache changes decode time by +38.4%
+  Cached:   median  169.95 ms  [174.74, 165.97, 172.83, 169.95, 170.06, 166.10, 162.86]
+  Uncached: median  119.66 ms  [128.28, 116.61, 124.70, 114.41, 119.66, 120.93, 118.85]
+  Cache changes decode time by +42.0%
 ```
 
 The two sides of the trade are both large here: repeated values make the cache save 80%, all-distinct values
-make it cost 41%. Two of the three columns go through a converter, so conversion dominates the decode; on a wide
+make it cost 42%. Two of the three columns go through a converter, so conversion dominates the decode; on a wide
 schema where one column in ten is a `DateTime` both numbers shrink. Measure it rather than assume it.
 
 The decoders are rebuilt every round on purpose. Sharing one across rounds leaves its cache warm from the round
 before, and the high-cardinality case then reports hits where a single query has only misses — it read as a 70%
-saving instead of a 41% cost.
+saving instead of a cost.
 
-Neither payload covers the case that decided the cache's shape: a cardinality just above the old bound, where
-every lookup misses and every insert evicts. At 20k distinct, 200k `DateTime` values took 51.7 ms through a
-4096-entry `lru_cache`, against 39.5 ms with no cache and 8.8 ms with no bound. A third payload there is worth
-adding.
+Neither payload covers what happens between them, which is what decided the cache's shape. Three ways to
+bound it, on 300k rows of the schema above, against 174 ms with no cache at all:
+
+| Distinct values | Order | `lru_cache` | Fill and stop | Fill and start over |
+| --- | --- | ---: | ---: | ---: |
+| 20,000 | random | 224 ms | 52 ms | 51 ms |
+| 100,000 | random | — | 152 ms | 252 ms |
+| 100,000 | sorted | — | 150 ms | 110 ms |
+| 100,000 then 100 new hot ones | — | — | 235 ms | 108 ms |
+
+Eviction collapses: at 20k distinct a 4096-entry `lru_cache` is slower than no cache, every lookup missing and
+every insert evicting. Filling and stopping avoids that but keeps whatever it saw first, so it misses forever
+once the working set moves — the last two rows, which are what a column in time order looks like. Starting over
+loses only where access is uniformly random over a cardinality just above the bound. `_QUERY_VALUE_CACHE_SIZE`
+takes the last of the three. A payload for each row above is worth adding.
+
+The bound is also what keeps `stream()` flat, where the cache lives as long as the query while the caller drops
+each row. Peak traced memory:
+
+| Rows | Unbounded | Bounded |
+| --- | ---: | ---: |
+| 100,000 | 36.6 MiB | 23.4 MiB |
+| 1,000,000 | 297.4 MiB | 23.6 MiB |
+| 3,000,000 | 1033.3 MiB | 24.4 MiB |

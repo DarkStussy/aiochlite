@@ -212,12 +212,15 @@ def _decimal_size(precision: int) -> int:
 
 _EPOCH_DATE = date(1970, 1, 1)
 
-# Bound for converters shared across queries; per-query ones use `_value_cache` and need none.
+# Bound for converters shared across queries.
 _VALUE_CACHE_SIZE = 4096
+
+# Values kept per column for one query. Sized for a working set, not for a whole column.
+_QUERY_VALUE_CACHE_SIZE = 65536
 
 
 class _ValueCache(dict[Any, Any]):
-    """Memoizes a converter. A hit is a plain dict lookup, with no Python frame."""
+    """Memoizes a converter for one query. A hit is a plain dict lookup, with no Python frame."""
 
     __slots__ = ("_convert",)
 
@@ -226,15 +229,19 @@ class _ValueCache(dict[Any, Any]):
         self._convert = convert
 
     def __missing__(self, key: Any) -> Any:
-        value = self[key] = self._convert(key)
+        value = self._convert(key)
+        # Full: start over. Stopping would blind it to a working set that moves; evicting costs more.
+        if len(self) >= _QUERY_VALUE_CACHE_SIZE:
+            self.clear()
+
+        self[key] = value
         return value
 
 
 def _value_cache(convert: Callable[[Any], Any]) -> Callable[[Any], Any]:
-    """Memoize a converter for one query, unbounded.
+    """Memoize a converter for one query.
 
-    Past a bound every lookup misses and every insert evicts, which costs more than no cache.
-    The result already holds every distinct value, so per query there is nothing to bound.
+    Bounded because `stream()` holds the cache for the whole result while dropping the rows.
     """
     return _ValueCache(convert).__getitem__
 

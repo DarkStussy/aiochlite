@@ -12,11 +12,13 @@
   call per row, in `fetch()`, `fetch_rows()` and `stream()`. On 200k rows: 3.5x on five numeric
   columns, 5.9x on one, 3.1x streaming. A schema with a variable-width column keeps the per-row
   reader and is unaffected.
-- Converters built per query no longer bound their value cache. Past the old 4096-entry bound
-  every lookup missed and every insert evicted, costing more than no cache at all: 200k
-  `DateTime` values at 20k distinct took 51.7 ms bounded, against 39.5 ms uncached and 8.8 ms
-  unbounded. The cache is released with the query, so it adds no order of memory over the result.
-  Converters shared across queries keep the bound.
+- Converters built per query now memoize into a cache that starts over once full, rather than one
+  that evicts. Past the old 4096-entry bound every lookup missed and every insert evicted, costing
+  more than no cache at all: 300k rows at 20k distinct values took 224 ms that way, against 174 ms
+  uncached and 51 ms now. The cache is released with the query and holds at most 65536 values per
+  column, so `stream()` stays flat in memory however long the result runs: 3M rows of distinct
+  timestamps peaked at 24 MiB against 1033 MiB unbounded. Converters shared across queries keep
+  their own bound.
 - A row now decodes through a loop compiled for its schema, rather than a reader call per column
   per row. On 200k rows: 3.4x on `UInt64, Float64, String`, 3.6x on
   `UInt64, Nullable(String), Nullable(DateTime)`, 2.1x-2.9x streaming. Fixed-width, `String`,
