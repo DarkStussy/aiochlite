@@ -17,12 +17,14 @@
   `DateTime` values at 20k distinct took 51.7 ms bounded, against 39.5 ms uncached and 8.8 ms
   unbounded. The cache is released with the query, so it adds no order of memory over the result.
   Converters shared across queries keep the bound.
-- A schema of fixed-width, `String` and `Nullable` columns now decodes through a loop compiled
-  for that schema, rather than a reader call per column per row. On 200k rows: 3.4x on
-  `UInt64, Float64, String`, 3.6x on `UInt64, Nullable(String), Nullable(DateTime)`, 2.1x-2.9x
-  streaming. The compiled code is cached per schema; the converters it uses are not, so their
-  per-query caches are still released with the query. A column of any other type, `Array` and
-  `Map` among them, keeps the reader path.
+- A row now decodes through a loop compiled for its schema, rather than a reader call per column
+  per row. On 200k rows: 3.4x on `UInt64, Float64, String`, 3.6x on
+  `UInt64, Nullable(String), Nullable(DateTime)`, 2.1x-2.9x streaming. Fixed-width, `String`,
+  `Nullable` and `Array` columns are emitted inline; a column of any other type reads through its
+  own closure inside the same loop, so one such column no longer costs the whole row the compiled
+  path. A row whose every column needs a closure is left to the reader path. The compiled code is
+  cached per schema; the converters it uses are not, so their per-query caches are still released
+  with the query.
 - An `Array` of fixed-width elements now decodes with one `struct` call for the whole array
   instead of a reader call per element, and an `Array(String)` with one call per array. On 100k
   rows: 6.0x on `Array(UInt64)` of 20 elements, 3.8x of 3, 4.0x on

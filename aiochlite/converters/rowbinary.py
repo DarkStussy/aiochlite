@@ -38,6 +38,10 @@ class _Reader(Protocol):
     def pos(self) -> int: ...
 
 
+class _ShortData(ValueError):
+    """A read past the end of the payload, as opposed to a payload that will not decode."""
+
+
 class _BinaryReader:
     def __init__(self, data: bytes):
         # Both views of the same payload: memoryview for struct reads, bytes for string slicing,
@@ -49,63 +53,63 @@ class _BinaryReader:
     def _read(self, size: int) -> memoryview:
         end = self._pos + size
         if end > len(self._data):
-            raise ValueError("Unexpected end of data")
+            raise _ShortData("Unexpected end of data")
         chunk = self._data[self._pos : end]
         self._pos = end
         return chunk
 
     def read_uint8(self) -> int:
         if self._pos >= len(self._data):
-            raise ValueError("Unexpected end of data")
+            raise _ShortData("Unexpected end of data")
         value = self._data[self._pos]
         self._pos += 1
         return int(value)
 
     def read_int8(self) -> int:
         if self._pos + 1 > len(self._data):
-            raise ValueError("Unexpected end of data")
+            raise _ShortData("Unexpected end of data")
         value = struct.unpack_from("<b", self._data, self._pos)[0]
         self._pos += 1
         return value
 
     def read_uint16(self) -> int:
         if self._pos + 2 > len(self._data):
-            raise ValueError("Unexpected end of data")
+            raise _ShortData("Unexpected end of data")
         value = struct.unpack_from("<H", self._data, self._pos)[0]
         self._pos += 2
         return value
 
     def read_int16(self) -> int:
         if self._pos + 2 > len(self._data):
-            raise ValueError("Unexpected end of data")
+            raise _ShortData("Unexpected end of data")
         value = struct.unpack_from("<h", self._data, self._pos)[0]
         self._pos += 2
         return value
 
     def read_uint32(self) -> int:
         if self._pos + 4 > len(self._data):
-            raise ValueError("Unexpected end of data")
+            raise _ShortData("Unexpected end of data")
         value = struct.unpack_from("<I", self._data, self._pos)[0]
         self._pos += 4
         return value
 
     def read_int32(self) -> int:
         if self._pos + 4 > len(self._data):
-            raise ValueError("Unexpected end of data")
+            raise _ShortData("Unexpected end of data")
         value = struct.unpack_from("<i", self._data, self._pos)[0]
         self._pos += 4
         return value
 
     def read_uint64(self) -> int:
         if self._pos + 8 > len(self._data):
-            raise ValueError("Unexpected end of data")
+            raise _ShortData("Unexpected end of data")
         value = struct.unpack_from("<Q", self._data, self._pos)[0]
         self._pos += 8
         return value
 
     def read_int64(self) -> int:
         if self._pos + 8 > len(self._data):
-            raise ValueError("Unexpected end of data")
+            raise _ShortData("Unexpected end of data")
         value = struct.unpack_from("<q", self._data, self._pos)[0]
         self._pos += 8
         return value
@@ -115,14 +119,14 @@ class _BinaryReader:
 
     def read_float32(self) -> float:
         if self._pos + 4 > len(self._data):
-            raise ValueError("Unexpected end of data")
+            raise _ShortData("Unexpected end of data")
         value = struct.unpack_from("<f", self._data, self._pos)[0]
         self._pos += 4
         return value
 
     def read_float64(self) -> float:
         if self._pos + 8 > len(self._data):
-            raise ValueError("Unexpected end of data")
+            raise _ShortData("Unexpected end of data")
         value = struct.unpack_from("<d", self._data, self._pos)[0]
         self._pos += 8
         return value
@@ -146,7 +150,7 @@ class _BinaryReader:
         length = self.read_varuint()
         end = self._pos + length
         if end > len(self._raw):
-            raise ValueError("Unexpected end of data")
+            raise _ShortData("Unexpected end of data")
 
         value = self._raw[self._pos : end].decode("utf-8")
         self._pos = end
@@ -156,7 +160,7 @@ class _BinaryReader:
         """Decode a run of fixed-width fields with a single struct call."""
         end = self._pos + size
         if end > len(self._data):
-            raise ValueError("Unexpected end of data")
+            raise _ShortData("Unexpected end of data")
 
         values = unpack_from(self._data, self._pos)
         self._pos = end
@@ -177,7 +181,7 @@ class _BinaryReader:
     def skip(self, size: int):
         end = self._pos + size
         if end > len(self._data):
-            raise ValueError("Unexpected end of data")
+            raise _ShortData("Unexpected end of data")
         self._pos = end
 
 
@@ -852,7 +856,7 @@ def _codegen_kind(ch_type: str, server_tz: str | None) -> tuple[str, Any] | None
         inner = _codegen_kind(unwrapped[9:-1], server_tz)
         # Only what `_emit_nullable` can nest. ClickHouse rejects `Nullable(Array(...))` anyway,
         # but an unhandled kind here would silently emit a decoder for the wrong shape.
-        return ("nullable", inner) if inner is not None and inner[0] in {"fixed", "string"} else None
+        return ("nullable", inner) if inner is not None and inner[0] in {"fixed", "string"} else ("reader", None)
 
     if unwrapped.startswith("Array(") and unwrapped.endswith(")"):
         element = _strip_low_cardinality(unwrapped[6:-1])
@@ -862,15 +866,19 @@ def _codegen_kind(ch_type: str, server_tz: str | None) -> tuple[str, Any] | None
         # Only a flat array of a fixed-width type: anything deeper would need the generator to
         # nest, and the reader path handles it well enough.
         field = _fixed_field(element, server_tz)
-        return ("array_fixed", field[0]) if field is not None else None
+        return ("array_fixed", field[0]) if field is not None else ("reader", None)
 
     field = _fixed_field(unwrapped, server_tz)
     if field is not None:
         return "fixed", field[0]
 
-    # `JSON` is left out on purpose: `json.loads` is over 90% of its decode, so compiling the
-    # walk around it measured no faster than the reader path.
-    return ("string", None) if unwrapped == "String" else None
+    if unwrapped == "String":
+        return "string", None
+
+    # Everything else is read by its closure, in place, so one uncovered column no longer costs
+    # the row the compiled path. `JSON` stays here on purpose: `json.loads` is over 90% of its
+    # decode, so compiling the walk around it measured no faster.
+    return "reader", None
 
 
 def _emit_fixed_run(columns: list[int], codes: str, converted: set[int], indent: str) -> list[str]:
@@ -931,6 +939,21 @@ def _emit_array_string(column: int, indent: str) -> list[str]:
     ]
 
 
+def _emit_reader(column: int, indent: str) -> list[str]:
+    """Read one column through its closure, handing it the cursor and taking it back.
+
+    `_pos` rather than the property: the generated code is part of this module, and the property
+    would cost two calls a row.
+    """
+    return [
+        f"{indent}_r._pos = p",
+        f"{indent}try:",
+        f"{indent}    v{column} = _f{column}(_r)",
+        f"{indent}except _Short: break",
+        f"{indent}p = _r._pos",
+    ]
+
+
 def _emit_nullable(column: int, inner: tuple[str, Any], converted: set[int], indent: str) -> list[str]:
     # A `break` inside the else still leaves the row loop, so a short value is reported as one.
     lines = [
@@ -949,6 +972,51 @@ def _emit_nullable(column: int, inner: tuple[str, Any], converted: set[int], ind
     return lines + _emit_fixed_run([column], inner[1], converted, nested)
 
 
+def _emit_column(
+    column: int,
+    kinds: list[tuple[str, Any] | None],
+    types: tuple[str, ...],
+    server_tz: str | None,
+    converted: set[int],
+    namespace: dict[str, Any],
+) -> tuple[list[str], int]:
+    """Lines decoding the column at `column`, and the index of the one after it."""
+    kind = kinds[column]
+    assert kind is not None
+    indent = "        "
+
+    if kind[0] == "string":
+        return _emit_string(column, indent), column + 1
+
+    if kind[0] == "reader":
+        namespace[f"_f{column}"] = _reader_for_type(types[column], server_tz)
+        return _emit_reader(column, indent), column + 1
+
+    if kind[0] == "array_string":
+        return _emit_array_string(column, indent), column + 1
+
+    if kind[0] == "array_fixed":
+        namespace[f"_u{column}"] = _ArrayUnpackers(kind[1])
+        return _emit_array_fixed(column, kind[1], converted, indent), column + 1
+
+    if kind[0] == "nullable":
+        # The null flag makes the width vary, so the column cannot join a run.
+        if kind[1][0] == "fixed":
+            namespace[f"_s{column}"] = struct.Struct(f"<{kind[1][1]}").unpack_from
+        return _emit_nullable(column, kind[1], converted, indent), column + 1
+
+    # Consecutive fixed-width columns share one struct call, as in the bulk path.
+    run: list[int] = []
+    codes = ""
+    while column < len(kinds) and (entry := kinds[column]) is not None and entry[0] == "fixed":
+        run.append(column)
+        codes += entry[1] or ""
+        column += 1
+
+    namespace[f"_s{run[0]}"] = struct.Struct(f"<{codes}").unpack_from
+    return _emit_fixed_run(run, codes, converted, indent), column
+
+
 @lru_cache(maxsize=256)
 def _compiled_row_decoder(
     types: tuple[str, ...],
@@ -965,59 +1033,39 @@ def _compiled_row_decoder(
     if not kinds or any(kind is None for kind in kinds):
         return None
 
+    # With nothing to emit inline the compiled loop would only wrap the reader calls it already
+    # makes, so the plain reader path stays.
+    if all(kind is not None and kind[0] == "reader" for kind in kinds):
+        return None
+
     converted = {
         column
         for column, ch_type in enumerate(types)
         if (_fixed_field(_codegen_value_type(ch_type), server_tz) or (None, None))[1]
     }
-    namespace: dict[str, Any] = {"_varint": _read_varint, "_strings": _read_string_array}
+    namespace: dict[str, Any] = {
+        "_varint": _read_varint,
+        "_strings": _read_string_array,
+        "_Reader": _BinaryReader,
+        "_Short": _ShortData,
+    }
     body: list[str] = []
     column = 0
 
     while column < len(kinds):
-        kind = kinds[column]
-        assert kind is not None
-        if kind[0] == "string":
-            body += _emit_string(column, "        ")
-            column += 1
-            continue
-
-        if kind[0] == "array_string":
-            body += _emit_array_string(column, "        ")
-            column += 1
-            continue
-
-        if kind[0] == "array_fixed":
-            namespace[f"_u{column}"] = _ArrayUnpackers(kind[1])
-            body += _emit_array_fixed(column, kind[1], converted, "        ")
-            column += 1
-            continue
-
-        if kind[0] == "nullable":
-            # The null flag makes the width vary, so the column cannot join a run.
-            if kind[1][0] == "fixed":
-                namespace[f"_s{column}"] = struct.Struct(f"<{kind[1][1]}").unpack_from
-            body += _emit_nullable(column, kind[1], converted, "        ")
-            column += 1
-            continue
-
-        # Consecutive fixed-width columns share one struct call, as in the bulk path.
-        run: list[int] = []
-        codes = ""
-        while column < len(kinds) and (entry := kinds[column]) is not None and entry[0] == "fixed":
-            run.append(column)
-            codes += entry[1] or ""
-            column += 1
-
-        namespace[f"_s{run[0]}"] = struct.Struct(f"<{codes}").unpack_from
-        body += _emit_fixed_run(run, codes, converted, "        ")
+        lines, column = _emit_column(column, kinds, types, server_tz, converted, namespace)
+        body += lines
 
     values = ", ".join(f"v{column}" for column in range(len(kinds)))
+    # Held for the whole call, so its view of the payload is released before the caller can feed
+    # the buffer again and resize it.
+    reader = ["    _r = _Reader(data)"] if any(kind and kind[0] == "reader" for kind in kinds) else []
     source = "\n".join(
         [
             "def _decode(data, pos, end):",
             "    rows = []",
             "    append = rows.append",
+            *reader,
             "    while pos < end:",
             # `p` advances through the row and is committed only once the row is whole, so a
             # partial trailing row leaves `pos` on a row boundary.

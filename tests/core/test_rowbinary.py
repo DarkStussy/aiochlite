@@ -808,14 +808,11 @@ def test_streaming_batches_a_row_of_fixed_and_string_columns():
     assert asyncio.run(_run()) == _expected_fixed_width_rows()
 
 
-def test_streaming_keeps_the_reader_path_for_an_uncovered_column():
+def test_streaming_keeps_the_reader_path_when_no_column_is_covered():
     parts = [
-        _encode_varuint(2),
-        _encode_string("id"),
+        _encode_varuint(1),
         _encode_string("pair"),
-        _encode_string("UInt8"),
         _encode_string("Tuple(String, UInt8)"),
-        (7).to_bytes(1, "little"),
         _encode_string("hi"),
         (5).to_bytes(1, "little"),
     ]
@@ -830,7 +827,7 @@ def test_streaming_keeps_the_reader_path_for_an_uncovered_column():
         assert parser._batch is None
         return [row async for row in parser.rows()]
 
-    assert asyncio.run(_run()) == [[7, ("hi", 5)]]
+    assert asyncio.run(_run()) == [[("hi", 5)]]
 
 
 def test_value_cache_converts_once_per_distinct_value():
@@ -888,6 +885,12 @@ CODEGEN_SCHEMAS = [
     ["UInt64", "Array(UInt64)", "String"],
     ["Array(DateTime('UTC'))", "Array(UUID)"],
     ["Array(String)", "Nullable(String)", "Array(Decimal64(2))"],
+    # Mixed rows: the uncovered column reads through its closure, the rest is emitted inline.
+    ["UInt64", "Tuple(String, UInt8)", "String"],
+    ["UInt64", "Map(String, UInt8)", "DateTime('UTC')"],
+    ["String", "JSON", "UInt64"],
+    ["UInt64", "Array(Array(UInt8))", "Nullable(String)"],
+    ["Tuple(String, UInt8)", "Map(String, UInt8)", "UInt64"],
 ]
 
 # Empty, one byte, exactly at and either side of the single-byte varint limit, and multi-byte.
@@ -956,6 +959,14 @@ def _codegen_payload(types: list[str], rows: int) -> bytes:
         "Array(DateTime('UTC'))": lambda i: _array(i, _datetime_utc),
         "Array(UUID)": lambda i: _array(i, _uuid),
         "Array(Decimal64(2))": lambda i: _array(i, _decimal64),
+        "Tuple(String, UInt8)": lambda i: _string(i) + bytes([i % 256]),
+        "Map(String, UInt8)": lambda i: (
+            _encode_varuint(i % 3) + b"".join(_encode_string(f"k{j}") + bytes([j]) for j in range(i % 3))
+        ),
+        "JSON": lambda i: _encode_string(f'{{"a": {i}, "b": "x{i % 7}"}}'),
+        "Array(Array(UInt8))": lambda i: (
+            _encode_varuint(i % 3) + b"".join(_encode_varuint(j) + bytes(range(j)) for j in range(i % 3))
+        ),
     }
     header = [_encode_varuint(len(types))]
     header += [_encode_string(f"c{idx}") for idx in range(len(types))]
@@ -986,19 +997,29 @@ def test_compiled_decoder_rejects_a_truncated_row(cut: int):
         list(parse_rowbinary_with_names_and_types(payload[:-cut])[2])
 
 
-@pytest.mark.parametrize(
-    "ch_type",
-    [
-        "Map(String, UInt8)",
-        "Tuple(String, UInt8)",
-        "JSON",
-        "Nullable(Array(UInt8))",
-        "Array(Array(UInt8))",
-        "Array(Nullable(UInt8))",
-    ],
-)
-def test_an_uncovered_column_is_not_compiled(ch_type: str):
-    assert rowbinary._compiled_row_decoder(("UInt64", ch_type), "UTC", as_tuple=True) is None
+UNCOVERED_TYPES = [
+    "Map(String, UInt8)",
+    "Tuple(String, UInt8)",
+    "JSON",
+    "Array(Array(UInt8))",
+    "Array(Nullable(UInt8))",
+]
+
+
+@pytest.mark.parametrize("ch_type", UNCOVERED_TYPES)
+def test_an_uncovered_column_falls_back_to_its_own_reader(ch_type: str):
+    """One column the generator cannot emit must not cost the row the compiled path."""
+    compiled = rowbinary._compiled_row_decoder(("UInt64", ch_type), "UTC", as_tuple=True)
+
+    assert compiled is not None
+    assert "_f1" in compiled[1]
+    assert "_f0" not in compiled[1]
+
+
+@pytest.mark.parametrize("ch_type", UNCOVERED_TYPES)
+def test_a_row_of_only_uncovered_columns_is_not_compiled(ch_type: str):
+    """With nothing to emit inline the loop would only wrap the reader calls it already makes."""
+    assert rowbinary._compiled_row_decoder((ch_type,), "UTC", as_tuple=True) is None
 
 
 def test_compiled_cache_holds_no_converters():
