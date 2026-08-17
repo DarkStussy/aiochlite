@@ -101,6 +101,31 @@ jobs:
           files: ./coverage.xml
           fail_ci_if_error: false
 
+  windows:
+    name: Windows (Python ${{ matrix.python-version }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # The ends of the supported range; the versions between are covered on Linux.
+        python-version: ["3.12", "3.14"]
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          enable-cache: true
+      - name: Install dependencies
+        run: uv sync --python ${{ matrix.python-version }}
+      # Windows ships no IANA database; `tzdata` comes in as a marked dependency.
+      - name: Check the timezone database is there
+        run: uv run python -c "from zoneinfo import ZoneInfo; print(ZoneInfo('Europe/Moscow'))"
+      # No ClickHouse service here, so only the tests that reach no server.
+      - name: Run core tests
+        run: uv run pytest tests/core -q
+
   aiohttp-range:
     name: aiohttp (${{ matrix.label }})
     strategy:
