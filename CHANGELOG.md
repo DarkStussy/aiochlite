@@ -7,12 +7,6 @@
   `ChProtocolError`, because eight `_BinaryReader` methods left the bounds check to `struct` and
   `struct.error` is no `ValueError`. It escaped the decode boundary and reached the caller raw.
 
-### Removed
-- The fixed-width fusion path and its `decode_fusion.py` benchmark. A column is now either emitted
-  inline by the compiled decoder or read through its own closure, and fusion applied to exactly the
-  columns the generator emits inline — over 11,154 type combinations there was no schema left where
-  the compiled decoder declined a row and fusion still applied. All of it was internal.
-
 ### Changed
 - A row that is fixed-width end to end now decodes in a single `struct` pass instead of a Python
   call per row, in `fetch()`, `fetch_rows()` and `stream()`. On 200k rows: 3.5x on five numeric
@@ -26,11 +20,14 @@
 - A row now decodes through a loop compiled for its schema, rather than a reader call per column
   per row. On 200k rows: 3.4x on `UInt64, Float64, String`, 3.6x on
   `UInt64, Nullable(String), Nullable(DateTime)`, 2.1x-2.9x streaming. Fixed-width, `String`,
-  `Nullable`, `Array` and `Tuple` columns are emitted inline; a column of any other type reads through its
-  own closure inside the same loop, so one such column no longer costs the whole row the compiled
-  path. A row whose every column needs a closure is left to the reader path. The compiled code is
+  `Nullable`, `Array`, `Tuple` and `Map` columns are emitted inline; a column of any other type reads
+  through its own closure inside the same loop, so one such column no longer costs the whole row the
+  compiled path. A row whose every column needs a closure is left to the reader path. The compiled code is
   cached per schema; the converters it uses are not, so their per-query caches are still released
   with the query.
+- A `Map` of flat keys and values now decodes through a loop compiled for its pair, instead of a
+  reader call per key and per value. On 100k rows of three pairs: 2.1x for `Map(String, UInt8)`,
+  2.3x for `Map(String, String)`. A `Map` holding a container keeps the reader path.
 - An `Array` of fixed-width elements now decodes with one `struct` call for the whole array
   instead of a reader call per element, and an `Array(String)` with one call per array. On 100k
   rows: 6.0x on `Array(UInt64)` of 20 elements, 3.8x of 3, 4.0x on

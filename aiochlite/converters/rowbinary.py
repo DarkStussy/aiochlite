@@ -862,10 +862,28 @@ def _codegen_tuple_kind(element_types: str, server_tz: str | None) -> tuple[str,
     return ("tuple", elements) if elements else ("reader", None)
 
 
+def _codegen_map_kind(pair_types: str, server_tz: str | None) -> tuple[str, Any]:
+    pair = split_type_arguments(pair_types)
+    if len(pair) != 2:
+        return "reader", None
+
+    entries: list[tuple[str, str, Any]] = []
+    for element in pair:
+        kind = _codegen_kind(element, server_tz)
+        # Only flat key and value, for the same reason as arrays.
+        if kind is None or kind[0] not in {"fixed", "string"}:
+            return "reader", None
+
+        entries.append((element, kind[0], kind[1]))
+
+    return "map", entries
+
+
 _CODEGEN_CONTAINERS: dict[str, Callable[[str, str | None], tuple[str, Any]]] = {
     "Nullable(": _codegen_nullable_kind,
     "Array(": _codegen_array_kind,
     "Tuple(": _codegen_tuple_kind,
+    "Map(": _codegen_map_kind,
 }
 
 
@@ -892,12 +910,12 @@ def _codegen_kind(ch_type: str, server_tz: str | None) -> tuple[str, Any] | None
     return "reader", None
 
 
-def _emit_fixed_run(slots: list[str], codes: str, converted: set[str], indent: str) -> list[str]:
+def _emit_fixed_run(slots: list[str], codes: str, converted: set[str], indent: str, short: str) -> list[str]:
     unpacker = struct.Struct(f"<{codes}")
     targets = ", ".join(f"v{slot}" for slot in slots)
     lines = [
         f"{indent}_e = p + {unpacker.size}",
-        f"{indent}if _e > end: break",
+        f"{indent}if _e > end: {short}",
         f"{indent}{targets}{',' if len(slots) == 1 else ''} = _s{slots[0]}(data, p)",
         f"{indent}p = _e",
     ]
@@ -905,51 +923,51 @@ def _emit_fixed_run(slots: list[str], codes: str, converted: set[str], indent: s
     return lines
 
 
-def _emit_varuint(indent: str) -> list[str]:
+def _emit_varuint(indent: str, short: str) -> list[str]:
     """Read a length or element count into `_l`."""
     return [
-        f"{indent}if p >= end: break",
+        f"{indent}if p >= end: {short}",
         f"{indent}_l = data[p]",
         f"{indent}p += 1",
         # One byte covers any value below 128, which is nearly every length and count.
         f"{indent}if _l > 0x7F:",
         f"{indent}    _l, p = _varint(data, p - 1, end)",
-        f"{indent}    if _l < 0: break",
+        f"{indent}    if _l < 0: {short}",
     ]
 
 
-def _emit_string(slot: str, indent: str) -> list[str]:
+def _emit_string(slot: str, indent: str, short: str) -> list[str]:
     return [
-        *_emit_varuint(indent),
+        *_emit_varuint(indent, short),
         f"{indent}_e = p + _l",
-        f"{indent}if _e > end: break",
+        f"{indent}if _e > end: {short}",
         f"{indent}v{slot} = data[p:_e].decode()",
         f"{indent}p = _e",
     ]
 
 
-def _emit_array_fixed(slot: str, code: str, converted: set[str], indent: str) -> list[str]:
+def _emit_array_fixed(slot: str, code: str, converted: set[str], indent: str, short: str) -> list[str]:
     size = struct.calcsize(f"<{code}")
     elements = f"_u{slot}[_l](data, p)"
     return [
-        *_emit_varuint(indent),
+        *_emit_varuint(indent, short),
         f"{indent}_e = p + _l * {size}",
-        f"{indent}if _e > end: break",
+        f"{indent}if _e > end: {short}",
         # One struct call for the whole array, where the reader path costs one per element.
         f"{indent}v{slot} = " + (f"[_c{slot}(_x) for _x in {elements}]" if slot in converted else f"list({elements})"),
         f"{indent}p = _e",
     ]
 
 
-def _emit_array_string(slot: str, indent: str) -> list[str]:
+def _emit_array_string(slot: str, indent: str, short: str) -> list[str]:
     return [
-        *_emit_varuint(indent),
+        *_emit_varuint(indent, short),
         f"{indent}v{slot}, p = _strings(data, p, _l, end)",
-        f"{indent}if v{slot} is None: break",
+        f"{indent}if v{slot} is None: {short}",
     ]
 
 
-def _emit_reader(slot: str, indent: str) -> list[str]:
+def _emit_reader(slot: str, indent: str, short: str) -> list[str]:
     """Read one column through its closure, handing it the cursor and taking it back.
 
     `_pos` rather than the property: the generated code is part of this module, and the property
@@ -959,15 +977,15 @@ def _emit_reader(slot: str, indent: str) -> list[str]:
         f"{indent}_r._pos = p",
         f"{indent}try:",
         f"{indent}    v{slot} = _f{slot}(_r)",
-        f"{indent}except _Short: break",
+        f"{indent}except _Short: {short}",
         f"{indent}p = _r._pos",
     ]
 
 
-def _emit_nullable(slot: str, inner: tuple[str, Any], converted: set[str], indent: str) -> list[str]:
-    # A `break` inside the else still leaves the row loop, so a short value is reported as one.
+def _emit_nullable(slot: str, inner: tuple[str, Any], converted: set[str], indent: str, short: str) -> list[str]:
+    # The short-data statement inside the else still leaves the loop it belongs to.
     lines = [
-        f"{indent}if p >= end: break",
+        f"{indent}if p >= end: {short}",
         f"{indent}_n = data[p]",
         f"{indent}p += 1",
         f"{indent}if _n:",
@@ -976,19 +994,22 @@ def _emit_nullable(slot: str, inner: tuple[str, Any], converted: set[str], inden
     ]
     nested = f"{indent}    "
     if inner[0] == "string":
-        return lines + _emit_string(slot, nested)
+        return lines + _emit_string(slot, nested, short)
 
     assert inner[0] == "fixed", inner[0]
-    return lines + _emit_fixed_run([slot], inner[1], converted, nested)
+    return lines + _emit_fixed_run([slot], inner[1], converted, nested, short)
 
 
 class _Emitter:
     """Builds the body of one compiled decoder, collecting what its globals need along the way."""
 
-    __slots__ = ("_server_tz", "converted", "converters", "namespace")
+    __slots__ = ("_server_tz", "converted", "converters", "namespace", "prelude")
 
     def __init__(self, server_tz: str | None):
         self._server_tz = server_tz
+        # Helper functions compiled alongside the decoder, for containers whose elements are read
+        # in a loop: a `break` there would leave that loop rather than the row.
+        self.prelude: list[str] = []
         self.namespace: dict[str, Any] = {
             "_varint": _read_varint,
             "_strings": _read_string_array,
@@ -1006,12 +1027,19 @@ class _Emitter:
             self.converters[slot] = ch_type
             self.converted.add(slot)
 
-    def emit(self, slots: list[str], types: Sequence[str], kinds: list[tuple[str, Any]], indent: str) -> list[str]:
+    def emit(
+        self,
+        slots: list[str],
+        types: Sequence[str],
+        kinds: list[tuple[str, Any]],
+        indent: str,
+        short: str = "break",
+    ) -> list[str]:
         """Lines decoding `types` back to back, one slot each."""
         body: list[str] = []
         index = 0
         while index < len(kinds):
-            lines, index = self._emit_one(index, slots, types, kinds, indent)
+            lines, index = self._emit_one(index, slots, types, kinds, indent, short)
             body += lines
 
         return body
@@ -1023,10 +1051,11 @@ class _Emitter:
         types: Sequence[str],
         kinds: list[tuple[str, Any]],
         indent: str,
+        short: str,
     ) -> tuple[list[str], int]:
         if kinds[index][0] != "fixed":
             self._register_converter(slots[index], types[index])
-            return self._emit_scalar(slots[index], kinds[index], types[index], indent), index + 1
+            return self._emit_scalar(slots[index], kinds[index], types[index], indent, short), index + 1
 
         # Consecutive fixed-width columns share one struct call, as in the bulk path.
         run: list[str] = []
@@ -1038,40 +1067,68 @@ class _Emitter:
             index += 1
 
         self.namespace[f"_s{run[0]}"] = struct.Struct(f"<{codes}").unpack_from
-        return _emit_fixed_run(run, codes, self.converted, indent), index
+        return _emit_fixed_run(run, codes, self.converted, indent, short), index
 
-    def _emit_scalar(self, slot: str, kind: tuple[str, Any], ch_type: str, indent: str) -> list[str]:
+    def _emit_scalar(self, slot: str, kind: tuple[str, Any], ch_type: str, indent: str, short: str) -> list[str]:
         if kind[0] == "string":
-            return _emit_string(slot, indent)
+            return _emit_string(slot, indent, short)
 
         if kind[0] == "reader":
             self.namespace[f"_f{slot}"] = _reader_for_type(ch_type, self._server_tz)
-            return _emit_reader(slot, indent)
+            return _emit_reader(slot, indent, short)
 
         if kind[0] == "array_string":
-            return _emit_array_string(slot, indent)
+            return _emit_array_string(slot, indent, short)
 
         if kind[0] == "array_fixed":
             self.namespace[f"_u{slot}"] = _ArrayUnpackers(kind[1])
-            return _emit_array_fixed(slot, kind[1], self.converted, indent)
+            return _emit_array_fixed(slot, kind[1], self.converted, indent, short)
 
         if kind[0] == "nullable":
             # The null flag makes the width vary, so the column cannot join a run.
             if kind[1][0] == "fixed":
                 self.namespace[f"_s{slot}"] = struct.Struct(f"<{kind[1][1]}").unpack_from
-            return _emit_nullable(slot, kind[1], self.converted, indent)
+            return _emit_nullable(slot, kind[1], self.converted, indent, short)
+
+        return self._emit_grouped(slot, kind, indent, short)
+
+    def _emit_grouped(self, slot: str, kind: tuple[str, Any], indent: str, short: str) -> list[str]:
+        """A container whose elements are emitted as a group of their own."""
+        if kind[0] == "map":
+            return self._emit_map(slot, kind[1], indent, short)
 
         assert kind[0] == "tuple", kind[0]
-        return self._emit_tuple(slot, kind[1], indent)
+        return self._emit_tuple(slot, kind[1], indent, short)
 
-    def _emit_tuple(self, slot: str, elements: list[tuple[str, str, Any]], indent: str) -> list[str]:
+    def _emit_tuple(self, slot: str, elements: list[tuple[str, str, Any]], indent: str, short: str) -> list[str]:
         """A tuple carries no count, so its elements are just more columns sharing the row."""
         slots = [f"{slot}_{index}" for index in range(len(elements))]
         types = [element[0] for element in elements]
         kinds = [(element[1], element[2]) for element in elements]
-        body = self.emit(slots, types, kinds, indent)
+        body = self.emit(slots, types, kinds, indent, short)
         body.append(f"{indent}v{slot} = ({', '.join(f'v{name}' for name in slots)},)")
         return body
+
+    def _emit_map(self, slot: str, entries: list[tuple[str, str, Any]], indent: str, short: str) -> list[str]:
+        """Pairs are read in a loop, so they go into a helper that reports short data by returning."""
+        slots = [f"{slot}_k", f"{slot}_v"]
+        types = [entry[0] for entry in entries]
+        kinds = [(entry[1], entry[2]) for entry in entries]
+        pair = self.emit(slots, types, kinds, "        ", "return None, p")
+        self.prelude += [
+            f"def _m{slot}(data, p, count, end):",
+            "    out = {}",
+            "    for _ in range(count):",
+            *pair,
+            f"        out[v{slot}_k] = v{slot}_v",
+            "    return out, p",
+            "",
+        ]
+        return [
+            *_emit_varuint(indent, short),
+            f"{indent}v{slot}, p = _m{slot}(data, p, _l, end)",
+            f"{indent}if v{slot} is None: {short}",
+        ]
 
 
 @lru_cache(maxsize=256)
@@ -1105,6 +1162,7 @@ def _compiled_row_decoder(
     reader = ["    _r = _Reader(data)"] if any(name.startswith("_f") for name in emitter.namespace) else []
     source = "\n".join(
         [
+            *emitter.prelude,
             "def _decode(data, pos, end):",
             "    rows = []",
             "    append = rows.append",

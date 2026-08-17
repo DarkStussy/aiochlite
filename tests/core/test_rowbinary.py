@@ -812,10 +812,12 @@ def test_streaming_keeps_the_reader_path_when_no_column_is_covered():
     parts = [
         _encode_varuint(1),
         _encode_string("tags"),
-        _encode_string("Map(String, UInt8)"),
+        _encode_string("Map(String, Array(UInt8))"),
         _encode_varuint(1),
         _encode_string("hi"),
+        _encode_varuint(2),
         (5).to_bytes(1, "little"),
+        (6).to_bytes(1, "little"),
     ]
     payload = b"".join(parts)
 
@@ -828,7 +830,7 @@ def test_streaming_keeps_the_reader_path_when_no_column_is_covered():
         assert parser._batch is None
         return [row async for row in parser.rows()]
 
-    assert asyncio.run(_run()) == [[{"hi": 5}]]
+    assert asyncio.run(_run()) == [[{"hi": [5, 6]}]]
 
 
 def test_value_cache_converts_once_per_distinct_value():
@@ -895,6 +897,9 @@ CODEGEN_SCHEMAS = [
     ["Tuple(String, UInt8)"],
     ["Tuple(UInt64, UInt64)", "String"],
     ["UInt64", "Tuple(String, DateTime('UTC'))", "Array(UInt64)"],
+    ["Map(String, UInt8)"],
+    ["UInt64", "Map(String, UInt64)", "String"],
+    ["Map(String, DateTime('UTC'))", "Nullable(String)"],
 ]
 
 # Empty, one byte, exactly at and either side of the single-byte varint limit, and multi-byte.
@@ -969,6 +974,12 @@ def _codegen_payload(types: list[str], rows: int) -> bytes:
         "Map(String, UInt8)": lambda i: (
             _encode_varuint(i % 3) + b"".join(_encode_string(f"k{j}") + bytes([j]) for j in range(i % 3))
         ),
+        "Map(String, UInt64)": lambda i: (
+            _encode_varuint(i % 4) + b"".join(_encode_string(f"k{j}") + _uint64(i + j) for j in range(i % 4))
+        ),
+        "Map(String, DateTime('UTC'))": lambda i: (
+            _encode_varuint(i % 3) + b"".join(_encode_string(f"k{j}") + _datetime_utc(i + j) for j in range(i % 3))
+        ),
         "JSON": lambda i: _encode_string(f'{{"a": {i}, "b": "x{i % 7}"}}'),
         "Array(Array(UInt8))": lambda i: (
             _encode_varuint(i % 3) + b"".join(_encode_varuint(j) + bytes(range(j)) for j in range(i % 3))
@@ -1004,11 +1015,11 @@ def test_compiled_decoder_rejects_a_truncated_row(cut: int):
 
 
 UNCOVERED_TYPES = [
-    "Map(String, UInt8)",
     "JSON",
     "Array(Array(UInt8))",
     "Array(Nullable(UInt8))",
     "Tuple(String, Array(UInt8))",
+    "Map(String, Array(UInt8))",
 ]
 
 
