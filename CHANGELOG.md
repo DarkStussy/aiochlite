@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+- A row that is fixed-width end to end now decodes in a single `struct` pass instead of a Python
+  call per row, in `fetch()`, `fetch_rows()` and `stream()`. On 200k rows: 3.5x on five numeric
+  columns, 5.9x on one, 3.1x streaming. A schema with a variable-width column keeps the per-row
+  reader and is unaffected.
+- Converters built per query no longer bound their value cache. Past the old 4096-entry bound
+  every lookup missed and every insert evicted, costing more than no cache at all: 200k
+  `DateTime` values at 20k distinct took 51.7 ms bounded, against 39.5 ms uncached and 8.8 ms
+  unbounded. The cache is released with the query, so it adds no order of memory over the result.
+  Converters shared across queries keep the bound.
+
 ## 1.6.0 (2026-08-15)
 
 ### Changed

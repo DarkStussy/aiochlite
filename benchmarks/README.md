@@ -204,10 +204,12 @@ Script: `benchmarks/converter_cache.py`
 
 What it measures:
 - Fixed-width columns such as `DateTime` and `Decimal` arrive as integers and are turned into Python objects by a
-  converter. Those converters memoize with a bounded `lru_cache` (`_VALUE_CACHE_SIZE`, 4096 per converter).
+  converter. Converters built per query memoize through `_value_cache`, which holds every distinct value the query
+  produced and is released with it. Only converters reached through `_reader_for_type`, which outlive the query
+  that built them, keep a bound (`_VALUE_CACHE_SIZE`).
 - The same schema is decoded twice, by a row reader whose converters memoize and by one whose converters do not.
-  The uncached variant is built by neutralizing `lru_cache` while the converters are created, so both readers run
-  identical conversion logic; the script asserts the patch took effect and that both decoders agree.
+  The uncached variant is built by neutralizing `_value_cache` while the converters are created, so both readers
+  run identical conversion logic; the script asserts the patch took effect and that both decoders agree.
 - Two payloads: one where values repeat heavily, one where every value is distinct.
 - Same timing method as `decode_fusion.py`: agreement check outside the timer, alternating order, previous result
   released before the next round, medians next to the raw series.
@@ -219,6 +221,10 @@ Run:
 ```
 
 ### Sample output
+
+> [!WARNING]
+> Measured against 1.6.0, when every converter memoized through a 4096-entry `lru_cache`. The numbers below
+> predate the switch to `_value_cache` and no longer describe the decoder. Re-run the script and replace them.
 
 Measured 2026-08-15.
 
@@ -242,10 +248,13 @@ High cardinality — every timestamp and price distinct
   Cache changes decode time by +11.4%
 ```
 
-On this schema an all-miss cache adds about 11% to decode time. The lookup is paid once per converted value,
-so its absolute cost is fairly steady, but its share of the total depends on the rest of the schema. The benefit
-side is not a constant either: it scales with how much of the decode is conversion. Two of the three columns here
-go through a converter, so conversion dominates and the win reaches 70%. On a wide schema where one column in ten
-is a `DateTime`, that share is likely smaller — measure it rather than assume it.
+An all-miss cache costs something on any schema: the lookup is paid once per converted value, so its absolute
+cost is fairly steady, but its share of the total depends on the rest of the schema. The benefit side is not a
+constant either: it scales with how much of the decode is conversion. Two of the three columns here go through a
+converter, so conversion dominates. On a wide schema where one column in ten is a `DateTime`, that share is
+smaller — measure it rather than assume it.
 
-Measure it on your own data before treating the cache as free.
+Neither payload covers the case that decided the cache's shape: a cardinality just above the old bound, where
+every lookup misses and every insert evicts. At 20k distinct, 200k `DateTime` values took 51.7 ms through a
+4096-entry `lru_cache`, against 39.5 ms with no cache and 8.8 ms with no bound. A third payload there is worth
+adding.

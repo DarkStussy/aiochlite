@@ -1,16 +1,16 @@
 """Converter benchmark: what the value cache costs and what it buys.
 
 Fixed-width columns such as `DateTime` and `Decimal` arrive as plain integers and are turned into
-Python objects by a converter. Those converters memoize with a bounded `lru_cache`, which pays off
-only when values repeat. This script measures both sides of that trade on the same decoder.
+Python objects by a converter. Converters built per query memoize through `_value_cache`, which pays
+off only when values repeat. This script measures both sides of that trade on the same decoder.
 
 Two payloads with the same schema are compared:
 - low cardinality: a few hundred distinct timestamps and prices, as in rounded event time;
 - high cardinality: every value distinct, as in monotonic event time.
 
 Each payload is decoded twice, by a row reader whose converters memoize and by one whose converters
-do not. The uncached variant is built by neutralizing `lru_cache` while the converters are created,
-so both readers run identical conversion logic.
+do not. The uncached variant is built by neutralizing `_value_cache` while the converters are
+created, so both readers run identical conversion logic.
 
 Environment variables:
 - CLICKHOUSE_HOST (default: localhost)
@@ -115,30 +115,35 @@ def _commit_sha() -> str:
     return completed.stdout.strip() or "unknown"
 
 
-def _no_cache(maxsize: int | None = None) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
-    """Stand-in for `lru_cache` that memoizes nothing."""
-
-    def decorate(func: Callable[..., Any]) -> Callable[..., Any]:
-        return func
-
-    return decorate
+def _no_cache(convert: Callable[[Any], Any]) -> Callable[[Any], Any]:
+    """Stand-in for `_value_cache` that memoizes nothing."""
+    return convert
 
 
 @contextmanager
 def _converters_without_cache() -> Iterator[None]:
     """Build converters without memoization for the duration of the block.
 
-    The converters close over the module-level `lru_cache` name at call time, so replacing it is
-    enough. `_reader_for_type` caches whole readers, so its cache is cleared on both edges.
+    `_fixed_field` looks up `_value_cache` at call time, so replacing the name is enough.
+    `_reader_for_type` caches whole readers, so its cache is cleared on both edges.
     """
-    original = rowbinary.lru_cache
-    setattr(rowbinary, "lru_cache", _no_cache)
+    original = rowbinary._value_cache
+    setattr(rowbinary, "_value_cache", _no_cache)
     rowbinary._reader_for_type.cache_clear()
     try:
         yield
     finally:
-        setattr(rowbinary, "lru_cache", original)
+        setattr(rowbinary, "_value_cache", original)
         rowbinary._reader_for_type.cache_clear()
+
+
+def _memoizes(ch_type: str) -> bool:
+    """Whether the converter built for this type memoizes."""
+    field = rowbinary._fixed_field(ch_type, SERVER_TZ)
+    if field is None:
+        raise RuntimeError(f"{ch_type} is not a fixed-width column")
+
+    return isinstance(getattr(field[1], "__self__", None), rowbinary._ValueCache)
 
 
 def _build_readers() -> tuple[_Decoder, _Decoder]:
@@ -146,11 +151,11 @@ def _build_readers() -> tuple[_Decoder, _Decoder]:
     types = list(COLUMN_TYPES)
 
     with _converters_without_cache():
-        if hasattr(rowbinary._decimal_converter("Decimal(18, 2)"), "cache_info"):
+        if _memoizes("Decimal(18, 2)"):
             raise RuntimeError("Converters are still memoizing; the benchmark would compare nothing")
         uncached_row = _make_row_reader(types, SERVER_TZ)
 
-    if not hasattr(rowbinary._decimal_converter("Decimal(18, 2)"), "cache_info"):
+    if not _memoizes("Decimal(18, 2)"):
         raise RuntimeError("Converters lost their cache outside the patch")
     cached_row = _make_row_reader(types, SERVER_TZ)
 
@@ -229,7 +234,7 @@ def _print_environment() -> None:
     print(f"OS: {platform.platform()}")
     print(f"Python: {platform.python_version()} ({platform.python_implementation()})")
     print(f"Schema: {', '.join(COLUMN_TYPES)}")
-    print(f"Rows: {BENCH_ROWS}, rounds: {BENCH_ROUNDS}, warmup: {BENCH_WARMUP}, cache: {rowbinary._VALUE_CACHE_SIZE}")
+    print(f"Rows: {BENCH_ROWS}, rounds: {BENCH_ROUNDS}, warmup: {BENCH_WARMUP}")
 
 
 async def main() -> None:

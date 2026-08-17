@@ -202,9 +202,31 @@ def _decimal_size(precision: int) -> int:
 
 _EPOCH_DATE = date(1970, 1, 1)
 
-# Caching decoded values wins ~30% when they repeat and costs ~14% when all are distinct, as with
-# monotonic event time. Switching it on per query was measured too: it costs as much as it saves.
+# Bound for converters shared across queries; per-query ones use `_value_cache` and need none.
 _VALUE_CACHE_SIZE = 4096
+
+
+class _ValueCache(dict[Any, Any]):
+    """Memoizes a converter. A hit is a plain dict lookup, with no Python frame."""
+
+    __slots__ = ("_convert",)
+
+    def __init__(self, convert: Callable[[Any], Any]):
+        super().__init__()
+        self._convert = convert
+
+    def __missing__(self, key: Any) -> Any:
+        value = self[key] = self._convert(key)
+        return value
+
+
+def _value_cache(convert: Callable[[Any], Any]) -> Callable[[Any], Any]:
+    """Memoize a converter for one query, unbounded.
+
+    Past a bound every lookup misses and every insert evicts, which costs more than no cache.
+    The result already holds every distinct value, so per query there is nothing to bound.
+    """
+    return _ValueCache(convert).__getitem__
 
 
 def _server_timezone(ch_type: str, server_tz: str | None) -> ZoneInfo:
@@ -226,7 +248,6 @@ def _datetime_converter(ch_type: str, server_tz: str | None) -> Callable[[int], 
     tz = explicit_tz or _server_timezone(ch_type, server_tz)
     strip_tz = explicit_tz is None
 
-    @lru_cache(maxsize=_VALUE_CACHE_SIZE)
     def _convert(ts: int) -> datetime:
         dt = datetime.fromtimestamp(ts, tz=tz)
         return dt.replace(tzinfo=None) if strip_tz else dt
@@ -235,7 +256,8 @@ def _datetime_converter(ch_type: str, server_tz: str | None) -> Callable[[int], 
 
 
 def _datetime_reader(ch_type: str, server_tz: str | None) -> Callable[[_Reader], datetime]:
-    _dt = _datetime_converter(ch_type, server_tz)
+    # Reached through `_reader_for_type`, so this converter outlives the query that built it.
+    _dt = lru_cache(maxsize=_VALUE_CACHE_SIZE)(_datetime_converter(ch_type, server_tz))
 
     def _read_dt(reader: _Reader) -> datetime:
         return _dt(reader.read_uint32())
@@ -251,13 +273,11 @@ def _time64_converter(ch_type: str) -> Callable[[int], timedelta]:
     if scale <= 6:
         multiplier = 10 ** (6 - scale)
 
-        @lru_cache(maxsize=_VALUE_CACHE_SIZE)
         def _convert(ticks: int) -> timedelta:
             return timedelta(microseconds=ticks * multiplier)
     else:
         divisor = 10 ** (scale - 6)
 
-        @lru_cache(maxsize=_VALUE_CACHE_SIZE)
         def _convert(ticks: int) -> timedelta:
             # Truncated toward zero, as the server itself narrows: `//` would push a negative
             # value one microsecond further from it.
@@ -267,7 +287,8 @@ def _time64_converter(ch_type: str) -> Callable[[int], timedelta]:
 
 
 def _time64_reader(ch_type: str) -> Callable[[_Reader], timedelta]:
-    _td = _time64_converter(ch_type)
+    # Reached through `_reader_for_type`, so this converter outlives the query that built it.
+    _td = lru_cache(maxsize=_VALUE_CACHE_SIZE)(_time64_converter(ch_type))
 
     def _read_time64(reader: _Reader) -> timedelta:
         return _td(reader.read_int64())
@@ -298,7 +319,6 @@ def _datetime64_converter(ch_type: str, server_tz: str | None) -> Callable[[int]
             # Truncated toward zero, as the server itself narrows.
             return -(-ticks // divisor) if ticks < 0 else ticks // divisor
 
-    @lru_cache(maxsize=_VALUE_CACHE_SIZE)
     def _convert(ticks: int) -> datetime:
         base_seconds, micros = divmod(_to_micros(ticks), 1_000_000)
         dt = datetime.fromtimestamp(base_seconds, tz=tz)
@@ -310,7 +330,8 @@ def _datetime64_converter(ch_type: str, server_tz: str | None) -> Callable[[int]
 
 
 def _datetime64_reader(ch_type: str, server_tz: str | None) -> Callable[[_Reader], datetime]:
-    _dt64 = _datetime64_converter(ch_type, server_tz)
+    # Reached through `_reader_for_type`, so this converter outlives the query that built it.
+    _dt64 = lru_cache(maxsize=_VALUE_CACHE_SIZE)(_datetime64_converter(ch_type, server_tz))
 
     def _read_dt64(reader: _Reader) -> datetime:
         return _dt64(reader.read_int64())
@@ -322,7 +343,6 @@ def _decimal_converter(ch_type: str) -> Callable[[int], Decimal]:
     """Raw signed integer -> scaled Decimal."""
     _, scale = _decimal_meta(ch_type)
 
-    @lru_cache(maxsize=_VALUE_CACHE_SIZE)
     def _convert(raw: int) -> Decimal:
         return Decimal(raw).scaleb(-scale)
 
@@ -332,7 +352,8 @@ def _decimal_converter(ch_type: str) -> Callable[[int], Decimal]:
 def _decimal_reader(ch_type: str) -> Callable[[_Reader], Decimal]:
     precision, _ = _decimal_meta(ch_type)
     size = _decimal_size(precision)
-    _dec = _decimal_converter(ch_type)
+    # Reached through `_reader_for_type`, so this converter outlives the query that built it.
+    _dec = lru_cache(maxsize=_VALUE_CACHE_SIZE)(_decimal_converter(ch_type))
 
     def _read_dec(reader: _Reader) -> Decimal:
         return _dec(int.from_bytes(reader._read(size), "little", signed=True))
@@ -583,13 +604,13 @@ def _seconds_to_timedelta(seconds: int) -> timedelta:
 _FIXED_CONVERTERS: dict[str, Callable[[str, str | None], tuple[str, Callable[[Any], Any]]]] = {
     "Date": lambda _ch_type, _tz: ("H", _days_to_date),
     "Date32": lambda _ch_type, _tz: ("i", _days_to_date),
-    "DateTime": lambda ch_type, tz: ("I", _datetime_converter(ch_type, tz)),
-    "DateTime64": lambda ch_type, tz: ("q", _datetime64_converter(ch_type, tz)),
+    "DateTime": lambda ch_type, tz: ("I", _value_cache(_datetime_converter(ch_type, tz))),
+    "DateTime64": lambda ch_type, tz: ("q", _value_cache(_datetime64_converter(ch_type, tz))),
     "Enum8": lambda ch_type, _tz: ("b", _enum_converter(ch_type)),
     "Enum16": lambda ch_type, _tz: ("h", _enum_converter(ch_type)),
     "IPv4": lambda _ch_type, _tz: ("I", ipaddress.IPv4Address),
     "Time": lambda _ch_type, _tz: ("i", _seconds_to_timedelta),
-    "Time64": lambda ch_type, _tz: ("q", _time64_converter(ch_type)),
+    "Time64": lambda ch_type, _tz: ("q", _value_cache(_time64_converter(ch_type))),
 }
 
 
@@ -613,12 +634,73 @@ def _fixed_field(ch_type: str, server_tz: str | None) -> tuple[str, Callable[[An
     if base.startswith("Decimal"):
         precision, _ = _decimal_meta(unwrapped)
         decimal_code = _DECIMAL_STRUCT_CODES.get(_decimal_size(precision))
-        return (decimal_code, _decimal_converter(unwrapped)) if decimal_code is not None else None
+        if decimal_code is None:
+            return None
+        return decimal_code, _value_cache(_decimal_converter(unwrapped))
 
     return None
 
 
 _ConvSlots = list[tuple[int, Callable[[Any], Any]]]
+
+
+def _fixed_row_layout(types: list[str], server_tz: str | None) -> tuple[struct.Struct, _ConvSlots] | None:
+    """One struct covering the whole row, or None if any column varies in width."""
+    # An empty format would make a zero-width row, which `iter_unpack` rejects.
+    if not types:
+        return None
+
+    codes: list[str] = []
+    conv_slots: _ConvSlots = []
+    for idx, ch_type in enumerate(types):
+        field = _fixed_field(ch_type, server_tz)
+        if field is None:
+            return None
+
+        code, convert = field
+        codes.append(code)
+        if convert is not None:
+            conv_slots.append((idx, convert))
+
+    return struct.Struct(f"<{''.join(codes)}"), conv_slots
+
+
+def _bulk_decode(
+    data: bytes,
+    start: int,
+    unpacker: struct.Struct,
+    conv_slots: _ConvSlots,
+    *,
+    as_tuple: bool,
+) -> list[Any]:
+    """Decode every row of a fixed-width payload with one `iter_unpack` over the body."""
+    try:
+        # The length check is upfront, so a truncated body raises before any row is built.
+        unpacked = unpacker.iter_unpack(memoryview(data)[start:])
+    except struct.error as error:
+        # A body that is not a whole number of rows is a bad response, not a bad call.
+        raise ValueError("Unexpected end of data") from error
+
+    if not conv_slots:
+        return list(unpacked) if as_tuple else [list(values) for values in unpacked]
+
+    rows: list[Any] = []
+    append = rows.append
+    # Two loops rather than a per-row branch on `as_tuple`.
+    if as_tuple:
+        for values in unpacked:
+            row = list(values)
+            for idx, convert in conv_slots:
+                row[idx] = convert(row[idx])
+            append(tuple(row))
+    else:
+        for values in unpacked:
+            row = list(values)
+            for idx, convert in conv_slots:
+                row[idx] = convert(row[idx])
+            append(row)
+
+    return rows
 
 
 def _struct_row_reader(codes: list[str], conv_slots: _ConvSlots) -> Callable[[_Reader], list[Any]]:
@@ -769,6 +851,22 @@ def parse_rowbinary_with_names_and_types(
     column_count = reader.read_varuint()
     names = [reader.read_string() for _ in range(column_count)]
     types = [reader.read_string() for _ in range(column_count)]
+
+    # A fixed-width row makes the body one repeating struct: one pass, and a list not a generator.
+    layout = _fixed_row_layout(types, server_tz)
+    if layout is not None:
+        return names, types, _bulk_decode(data, reader.pos, *layout, as_tuple=as_tuple)
+
+    return names, types, _reader_rows(reader, types, server_tz, as_tuple)
+
+
+def _reader_rows(
+    reader: _BinaryReader,
+    types: list[str],
+    server_tz: str | None,
+    as_tuple: bool,
+) -> Iterable[Any]:
+    """Lazy rows for a payload with at least one variable-width column."""
     read_row = _make_row_reader(types, server_tz)
 
     # Spelled out per path instead of sharing one generator: in this loop an extra call per row
@@ -793,7 +891,7 @@ def parse_rowbinary_with_names_and_types(
             while not reader.eof:
                 yield tuple(read_row(reader))
 
-    return names, types, _tuple_rows() if as_tuple else _rows()
+    return _tuple_rows() if as_tuple else _rows()
 
 
 _FIXED_SIZES: dict[str, int] = {
@@ -1268,6 +1366,7 @@ class RowBinaryWithNamesAndTypesStreamParser:
         self._read_row: Callable[[_Reader], list[Any]] | None = None
         self._skippers: list[Callable[[_Reader], None]] | None = None
         self._row_template: tuple[list[int], int] | None = None
+        self._bulk: tuple[struct.Struct, _ConvSlots] | None = None
         self._lazy = lazy
         self._server_tz = server_tz
 
@@ -1299,7 +1398,8 @@ class RowBinaryWithNamesAndTypesStreamParser:
                     self._read_row = None
                 else:
                     self._skippers = None
-                    self._read_row = _make_row_reader(types, self._server_tz)
+                    self._bulk = _fixed_row_layout(types, self._server_tz)
+                    self._read_row = None if self._bulk else _make_row_reader(types, self._server_tz)
             except _NeedMoreData:
                 self._reader.pos = checkpoint
                 if not await self._fill():
@@ -1307,10 +1407,55 @@ class RowBinaryWithNamesAndTypesStreamParser:
             else:
                 return names, types
 
-    async def rows(self) -> AsyncIterator[list[Any] | RowBinaryLazyValues]:
+    def _lazy_row(self) -> RowBinaryLazyValues:
+        """One row skipped rather than decoded, leaving the reader just past it."""
+        assert self._readers is not None
+        reader = self._reader
+        row_start = reader.pos
+
+        if self._row_template is not None:
+            offsets, row_width = self._row_template
+            reader.skip(row_width)
+        else:
+            assert self._skippers is not None
+            offsets = []
+            for skip in self._skippers:
+                offsets.append(reader.pos - row_start)
+                skip(reader)
+
+        # The streaming buffer keeps moving, so each row needs its own copy.
+        row_bytes = reader.copy_slice(row_start, reader.pos)
+        return RowBinaryLazyValues(_BinaryReader(row_bytes), offsets, self._readers)
+
+    async def rows(self) -> AsyncIterator[list[Any] | RowBinaryLazyValues]:  # noqa: C901, PLR0912
+        # Both loops stay here: delegating between async generators costs a frame per row,
+        # measured at 8% on a String column and worse on the bulk path.
         await self.read_header()
         assert self._readers is not None
         read_row = self._read_row
+
+        if self._bulk is not None:
+            unpacker, conv_slots = self._bulk
+            reader = self._reader
+            width = unpacker.size
+
+            while True:
+                # Whole rows go in one pass; a partial trailing row waits for the next chunk.
+                count = reader.remaining // width
+                if count:
+                    start = reader.pos
+                    end = start + count * width
+                    # A memoryview would block the resize that feeding the next chunk does.
+                    batch = _bulk_decode(reader.copy_slice(start, end), 0, unpacker, conv_slots, as_tuple=False)
+                    reader.pos = end
+                    reader.compact()
+                    for row in batch:
+                        yield row
+
+                if not await self._fill():
+                    if reader.remaining:
+                        raise ValueError("Unexpected end of data")
+                    return
 
         while True:
             if self._done and self._reader.remaining == 0:
@@ -1319,19 +1464,7 @@ class RowBinaryWithNamesAndTypesStreamParser:
             checkpoint = self._reader.pos
             try:
                 if self._lazy:
-                    row_start = self._reader.pos
-                    if self._row_template is not None:
-                        offsets, row_width = self._row_template
-                        self._reader.skip(row_width)
-                    else:
-                        assert self._skippers is not None
-                        offsets = []
-                        for skip in self._skippers:
-                            offsets.append(self._reader.pos - row_start)
-                            skip(self._reader)
-                    # The streaming buffer keeps moving, so each row needs its own copy.
-                    row_bytes = self._reader.copy_slice(row_start, self._reader.pos)
-                    yield RowBinaryLazyValues(_BinaryReader(row_bytes), offsets, self._readers)
+                    yield self._lazy_row()
                 elif read_row is not None:
                     yield read_row(self._reader)
                 else:

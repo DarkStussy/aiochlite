@@ -695,3 +695,134 @@ def test_lazy_constant_width_rows_survive_chunk_splits():
         return [[row[0], row[1], row[2]] async for row in parser.rows()]
 
     assert asyncio.run(_run()) == _expected_fixed_only_rows()
+
+
+def test_bulk_decode_handles_a_fully_fixed_width_payload():
+    payload = _fixed_only_payload()
+    names, types, rows = parse_rowbinary_with_names_and_types(payload)
+
+    assert rowbinary._fixed_row_layout(types, None) is not None
+    assert names == ["id", "ts", "price"]
+    assert list(rows) == _expected_fixed_only_rows()
+
+
+def _parse_rows(payload: bytes, *, as_tuple: bool) -> list[Any]:
+    """Decode a payload, picking the overload a runtime flag cannot."""
+    if as_tuple:
+        return list(parse_rowbinary_with_names_and_types(payload, as_tuple=True)[2])
+
+    return list(parse_rowbinary_with_names_and_types(payload, as_tuple=False)[2])
+
+
+@pytest.mark.parametrize("as_tuple", [False, True])
+def test_bulk_and_reader_paths_agree(as_tuple: bool, monkeypatch: pytest.MonkeyPatch):
+    """The bulk pass must decode exactly what the per-row reader does."""
+    payload = _fixed_only_payload()
+    bulk = _parse_rows(payload, as_tuple=as_tuple)
+
+    # No layout is what a variable-width column reports, and what selects the path.
+    monkeypatch.setattr(rowbinary, "_fixed_row_layout", lambda *_: None)
+
+    assert bulk == _parse_rows(payload, as_tuple=as_tuple)
+    assert all(isinstance(row, tuple if as_tuple else list) for row in bulk)
+
+
+def test_bulk_decode_rejects_a_truncated_row():
+    """A partial trailing row must surface as a decode failure."""
+    payload = _fixed_only_payload()[:-4]
+
+    with pytest.raises(ValueError, match="Unexpected end of data"):
+        list(parse_rowbinary_with_names_and_types(payload)[2])
+
+
+def test_bulk_decode_accepts_a_payload_with_no_rows():
+    # 3 rows of UInt64 + DateTime + Decimal64.
+    header = _fixed_only_payload()[: -3 * 20]
+    _names, _types, rows = parse_rowbinary_with_names_and_types(header)
+
+    assert list(rows) == []
+
+
+@pytest.mark.parametrize("ch_type", VARIABLE_WIDTH_TYPES)
+def test_a_variable_width_column_keeps_the_reader_path(ch_type: str):
+    assert rowbinary._fixed_row_layout(["UInt64", ch_type], "UTC") is None
+
+
+def test_streaming_bulk_rows_survive_every_chunk_boundary():
+    """A row split across chunks must wait for the rest of it."""
+    payload = _fixed_only_payload()
+
+    async def _run(size: int):
+        async def _chunks():
+            for i in range(0, len(payload), size):
+                yield payload[i : i + size]
+
+        parser = RowBinaryWithNamesAndTypesStreamParser(_chunks())
+        await parser.read_header()
+        assert parser._bulk is not None
+        return [row async for row in parser.rows()]
+
+    expected = _expected_fixed_only_rows()
+    assert all(asyncio.run(_run(size)) == expected for size in range(1, len(payload) + 2))
+
+
+def test_streaming_bulk_reports_a_truncated_trailing_row():
+    payload = _fixed_only_payload()[:-4]
+
+    async def _chunks():
+        yield payload
+
+    async def _run():
+        parser = RowBinaryWithNamesAndTypesStreamParser(_chunks())
+        await parser.read_header()
+        return [row async for row in parser.rows()]
+
+    with pytest.raises(ValueError, match="Unexpected end of data"):
+        asyncio.run(_run())
+
+
+def test_streaming_keeps_the_reader_path_for_a_variable_width_row():
+    payload = _fixed_width_payload()
+
+    async def _chunks():
+        yield payload
+
+    async def _run():
+        parser = RowBinaryWithNamesAndTypesStreamParser(_chunks())
+        await parser.read_header()
+        assert parser._bulk is None
+        return [row async for row in parser.rows()]
+
+    assert asyncio.run(_run()) == _expected_fixed_width_rows()
+
+
+def test_value_cache_converts_once_per_distinct_value():
+    calls = []
+
+    def _convert(value: int) -> str:
+        calls.append(value)
+        return str(value)
+
+    cached = rowbinary._value_cache(_convert)
+
+    assert [cached(v) for v in (1, 2, 1, 2, 3)] == ["1", "2", "1", "2", "3"]
+    assert calls == [1, 2, 3]
+
+
+def test_value_cache_keeps_entries_past_the_bound_of_the_shared_cache():
+    """A bound is what made the cache collapse on a column of middling cardinality."""
+    converted = 0
+
+    def _convert(value: int) -> int:
+        nonlocal converted
+        converted += 1
+        return value
+
+    cached = rowbinary._value_cache(_convert)
+    values = range(rowbinary._VALUE_CACHE_SIZE * 2)
+    for value in values:
+        cached(value)
+    for value in values:
+        cached(value)
+
+    assert converted == len(values)
