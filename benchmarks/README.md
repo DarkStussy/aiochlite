@@ -35,6 +35,9 @@ Script: `benchmarks/fetch_rows.py`
 What it measures:
 - End-to-end `SELECT` fetch + decode time.
 - Data is generated on the server (`INSERT ... SELECT ... FROM numbers(...)`) to avoid measuring client-side inserts.
+- Two schemas, run separately, because decode cost depends far more on column shape than on column count:
+  - `flat columns`: `UInt64, DateTime('UTC'), Tuple(String, UInt16), Array(Decimal(10, 2))`
+  - `nested containers`: `UInt64, Array(Array(UInt8)), Map(String, Array(UInt8)), Array(Nullable(UInt64))`
 - Compares:
   - `aiochlite (Row)`: `AsyncChClient.fetch()` (returns `Row`), in the client's default decode mode.
   - `aiochlite (tuples)`: `AsyncChClient.fetch_rows()` (returns raw tuples)
@@ -71,44 +74,90 @@ Measured 2026-08-17.
 Clients: aiochlite 1.7.0, aiochclient 2.7.0, clickhouse-connect 1.7.1
 Python: 3.14.5, ClickHouse: 26.3.17.110
 Rows: 100000, rounds: 5, warmup: 2
-Table: bench_io_161df20e45144d1caaf710f018b27da4
+
+=== Schema: flat columns — id UInt64, event_time DateTime('UTC'), payload Tuple(String, UInt16), prices Array(Decimal(10, 2))
+Table: bench_io_12467a434ca1494eba506d84cc1e250e
 
 IO benchmark (clickhouse-connect (async))
-Round 1:   171.93 ms (581,638 rows/s, 1.7 µs/row)
-Round 2:   176.51 ms (566,536 rows/s, 1.8 µs/row)
-Round 3:   160.21 ms (624,181 rows/s, 1.6 µs/row)
-Round 4:   158.37 ms (631,420 rows/s, 1.6 µs/row)
-Round 5:   158.09 ms (632,552 rows/s, 1.6 µs/row)
-Avg:       165.02 ms (605,978 rows/s, 1.7 µs/row)
+Round 1:   157.85 ms (633,496 rows/s, 1.6 µs/row)
+Round 2:   152.09 ms (657,497 rows/s, 1.5 µs/row)
+Round 3:   145.45 ms (687,502 rows/s, 1.5 µs/row)
+Round 4:   148.42 ms (673,779 rows/s, 1.5 µs/row)
+Round 5:   143.69 ms (695,925 rows/s, 1.4 µs/row)
+Avg:       149.50 ms (668,887 rows/s, 1.5 µs/row)
 
 IO benchmark (aiochlite (Row))
-Round 1:   219.15 ms (456,310 rows/s, 2.2 µs/row)
-Round 2:   200.60 ms (498,498 rows/s, 2.0 µs/row)
-Round 3:   196.46 ms (509,008 rows/s, 2.0 µs/row)
-Round 4:   223.52 ms (447,379 rows/s, 2.2 µs/row)
-Round 5:   198.13 ms (504,724 rows/s, 2.0 µs/row)
-Avg:       207.57 ms (481,759 rows/s, 2.1 µs/row)
+Round 1:   189.04 ms (528,982 rows/s, 1.9 µs/row)
+Round 2:   209.56 ms (477,183 rows/s, 2.1 µs/row)
+Round 3:   187.00 ms (534,747 rows/s, 1.9 µs/row)
+Round 4:   188.72 ms (529,887 rows/s, 1.9 µs/row)
+Round 5:   192.06 ms (520,663 rows/s, 1.9 µs/row)
+Avg:       193.28 ms (517,388 rows/s, 1.9 µs/row)
 
 IO benchmark (aiochlite (tuples))
-Round 1:   166.34 ms (601,187 rows/s, 1.7 µs/row)
-Round 2:   165.57 ms (603,984 rows/s, 1.7 µs/row)
-Round 3:   164.75 ms (606,973 rows/s, 1.6 µs/row)
-Round 4:   164.96 ms (606,211 rows/s, 1.6 µs/row)
-Round 5:   171.40 ms (583,425 rows/s, 1.7 µs/row)
-Avg:       166.60 ms (600,228 rows/s, 1.7 µs/row)
+Round 1:   150.34 ms (665,153 rows/s, 1.5 µs/row)
+Round 2:   157.99 ms (632,937 rows/s, 1.6 µs/row)
+Round 3:   165.11 ms (605,660 rows/s, 1.7 µs/row)
+Round 4:   159.56 ms (626,718 rows/s, 1.6 µs/row)
+Round 5:   162.03 ms (617,182 rows/s, 1.6 µs/row)
+Avg:       159.01 ms (628,905 rows/s, 1.6 µs/row)
 
 IO benchmark (aiochclient)
-Round 1:   363.21 ms (275,322 rows/s, 3.6 µs/row)
-Round 2:   369.87 ms (270,365 rows/s, 3.7 µs/row)
-Round 3:   369.62 ms (270,547 rows/s, 3.7 µs/row)
-Round 4:   362.14 ms (276,139 rows/s, 3.6 µs/row)
-Round 5:   363.02 ms (275,466 rows/s, 3.6 µs/row)
-Avg:       365.57 ms (273,544 rows/s, 3.7 µs/row)
+Round 1:   348.61 ms (286,850 rows/s, 3.5 µs/row)
+Round 2:   336.17 ms (297,465 rows/s, 3.4 µs/row)
+Round 3:   356.30 ms (280,660 rows/s, 3.6 µs/row)
+Round 4:   357.12 ms (280,017 rows/s, 3.6 µs/row)
+Round 5:   336.43 ms (297,236 rows/s, 3.4 µs/row)
+Avg:       346.93 ms (288,243 rows/s, 3.5 µs/row)
+
+=== Schema: nested containers — id UInt64, nested Array(Array(UInt8)), tags Map(String, Array(UInt8)), opt Array(Nullable(UInt64))
+Table: bench_io_58990c886cdc437db15d522c60347f91
+
+IO benchmark (clickhouse-connect (async))
+Round 1:   128.18 ms (780,132 rows/s, 1.3 µs/row)
+Round 2:   140.30 ms (712,781 rows/s, 1.4 µs/row)
+Round 3:   130.66 ms (765,369 rows/s, 1.3 µs/row)
+Round 4:   132.63 ms (753,985 rows/s, 1.3 µs/row)
+Round 5:   134.34 ms (744,373 rows/s, 1.3 µs/row)
+Avg:       133.22 ms (750,633 rows/s, 1.3 µs/row)
+
+IO benchmark (aiochlite (Row))
+Round 1:   202.33 ms (494,234 rows/s, 2.0 µs/row)
+Round 2:   196.79 ms (508,159 rows/s, 2.0 µs/row)
+Round 3:   198.66 ms (503,368 rows/s, 2.0 µs/row)
+Round 4:   203.50 ms (491,405 rows/s, 2.0 µs/row)
+Round 5:   201.73 ms (495,721 rows/s, 2.0 µs/row)
+Avg:       200.60 ms (498,500 rows/s, 2.0 µs/row)
+
+IO benchmark (aiochlite (tuples))
+Round 1:   178.85 ms (559,116 rows/s, 1.8 µs/row)
+Round 2:   165.81 ms (603,094 rows/s, 1.7 µs/row)
+Round 3:   164.28 ms (608,708 rows/s, 1.6 µs/row)
+Round 4:   166.40 ms (600,964 rows/s, 1.7 µs/row)
+Round 5:   165.51 ms (604,207 rows/s, 1.7 µs/row)
+Avg:       168.17 ms (594,634 rows/s, 1.7 µs/row)
+
+IO benchmark (aiochclient)
+Round 1:   358.13 ms (279,231 rows/s, 3.6 µs/row)
+Round 2:   347.82 ms (287,501 rows/s, 3.5 µs/row)
+Round 3:   346.48 ms (288,616 rows/s, 3.5 µs/row)
+Round 4:   365.19 ms (273,833 rows/s, 3.7 µs/row)
+Round 5:   351.99 ms (284,096 rows/s, 3.5 µs/row)
+Avg:       353.92 ms (282,548 rows/s, 3.5 µs/row)
 ```
 
 Repeat runs of the same configuration produced averages within approximately 2% of these results.
-`aiochlite (tuples)` and `clickhouse-connect` land inside that band of each other, so read them as a tie
-rather than one leading the other. The gap to `aiochlite (Row)` is the `Row` wrapper, one object per row.
+
+| Schema | `clickhouse-connect` | `aiochlite` (tuples) | `aiochlite` (`Row`) | `aiochclient` |
+| --- | ---: | ---: | ---: | ---: |
+| flat columns | 149.50 ms | 159.01 ms | 193.28 ms | 346.93 ms |
+| nested containers | 133.22 ms | 168.17 ms | 200.60 ms | 353.92 ms |
+
+On flat columns `aiochlite (tuples)` and `clickhouse-connect` land within a few percent of each other, close
+enough to read as a tie. On nested containers `clickhouse-connect` leads by about a quarter: its C parser
+walks a container as cheaply as a scalar, while aiochlite emits Python for each level. Both shapes compile —
+the second is not a fallback — so the gap is what compiled Python costs against C, not what the generator
+misses. The gap to `aiochlite (Row)` is the `Row` wrapper, one object per row.
 
 ## Converter benchmark: the value cache
 
