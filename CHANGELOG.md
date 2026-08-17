@@ -4,33 +4,34 @@
 
 ### Fixed
 - **On Windows, a `DateTime64` before 1970 raised `OSError: [Errno 22] Invalid argument`** instead
-  of decoding. The conversion went through `datetime.fromtimestamp`, which the C runtime there
-  rejects for a negative timestamp; such a value is now offset from the epoch by hand. Other
-  platforms decode as before, and `DateTime` is unsigned so it was never affected.
+  of decoding. It went through `datetime.fromtimestamp`, which the Windows C runtime rejects for a
+  negative timestamp; those values are now offset from the epoch by hand. Other platforms decode as
+  before, and `DateTime` is unsigned, so it was never affected.
 - A response truncated in the middle of a fixed-width value raised `struct.error` instead of
-  `ChProtocolError`, because eight `_BinaryReader` methods left the bounds check to `struct` and
-  `struct.error` is no `ValueError`. It escaped the decode boundary and reached the caller raw.
+  `ChProtocolError`: eight `_BinaryReader` methods left the bounds check to `struct`, and
+  `struct.error` is not a `ValueError`, so it slipped past the decode boundary and reached the
+  caller raw.
 
 ### Changed
-- A row that is fixed-width end to end now decodes in a single `struct` pass instead of a Python
-  call per row, in `fetch()`, `fetch_rows()` and `stream()`. On 200k rows: 3.5x on five numeric
-  columns, 5.9x on one, 3.1x streaming. A schema with a variable-width column keeps the per-row
-  reader and is unaffected.
-- Converters built per query now memoize into a cache that starts over once full, rather than one
-  that evicts. Past the old 4096-entry bound every lookup missed and every insert evicted, costing
-  more than no cache at all: 300k rows at 20k distinct values took 224 ms that way, against 174 ms
-  uncached and 51 ms now. The cache is released with the query and holds at most 65536 values per
-  column, so `stream()` stays flat in memory however long the result runs: 3M rows of distinct
-  timestamps peaked at 24 MiB against 1033 MiB unbounded. Converters shared across queries keep
-  their own bound.
+- A row that is fixed-width end to end now decodes in one `struct` pass instead of a Python call per
+  row — in `fetch()`, `fetch_rows()` and `stream()` alike. On 200k rows: 3.5x
+  on five numeric columns, 5.9x on one, 3.1x streaming. A schema with a variable-width column keeps
+  the per-row reader and is unaffected.
+- Converters built per query now memoize into a cache that starts over once full, instead of one
+  that evicts. Past the old 4096-entry bound every lookup missed and every insert evicted, which
+  cost more than having no cache at all: 300k rows over 20k distinct values took 224 ms that way,
+  174 ms uncached, 51 ms now. The cache holds at most 65536 values per column and is released with
+  the query, so `stream()` stays flat however long the result runs — 3M rows of distinct timestamps
+  peaked at 24 MiB, against 1033 MiB unbounded. Converters shared across queries keep their own
+  bound.
 - A row now decodes through a loop compiled for its schema, rather than a reader call per column
   per row. On 200k rows: 3.4x on `UInt64, Float64, String`, 3.6x on
   `UInt64, Nullable(String), Nullable(DateTime)`, 2.1x-2.9x streaming. Fixed-width, `String`,
-  `Nullable`, `Array`, `Tuple` and `Map` columns are emitted inline; a column of any other type reads
-  through its own closure inside the same loop, so one such column no longer costs the whole row the
-  compiled path. A row whose every column needs a closure is left to the reader path. The compiled code is
-  cached per schema; the converters it uses are not, so their per-query caches are still released
-  with the query.
+  `Nullable`, `Array`, `Tuple` and `Map` columns are emitted inline; anything else reads through its
+  own closure inside the same loop, so a single uncovered column no longer costs the whole row its
+  compiled path. Only a row where every column needs a closure stays on the reader path. The
+  compiled code is cached per schema, the converters it uses are not — their per-query caches are
+  still released with the query.
 - A `Map` now decodes through a loop compiled for its pair, instead of a reader call per key and
   per value. On 100k rows of three pairs: 2.1x for `Map(String, UInt8)`, 2.3x for
   `Map(String, String)`.
@@ -38,20 +39,20 @@
   instead of a reader call per element, and an `Array(String)` with one call per array. On 100k
   rows: 6.0x on `Array(UInt64)` of 20 elements, 3.8x of 3, 4.0x on
   `UInt64, Array(Decimal64(2)), String`, 1.6x on `Array(String)`.
-- A container holding another container, or a `Nullable`, is now compiled too, rather than left
-  whole to the reader: `Array(Nullable(...))`, `Array(Array(...))`, `Array(Tuple(...))`,
+- A container holding another container, or a `Nullable`, is now compiled too instead of going to
+  the reader whole: `Array(Nullable(...))`, `Array(Array(...))`, `Array(Tuple(...))`,
   `Array(Map(...))`, and `Tuple` or `Map` with any of those inside. On 100k rows of
-  `UInt64, Array(Array(UInt8)), Map(String, Array(UInt8)), Array(Nullable(UInt64))`: 2.1x
-  end to end. Only nesting deeper than four levels keeps the reader path.
-- A `JSON` column now decodes inside the compiled loop, and goes straight to the scanner
-  `json.loads` reaches internally rather than through the argument checks it wraps that scanner in.
-  Where `loads` rescans for anything following the value, the decoder compares the offset the
-  scanner stopped at, so a document with a second value after the first still raises. On 100k rows
-  of `UInt64, JSON` the fetch takes 173 ms against 226 ms. `JSON` inside an `Array`, `Tuple` or
-  `Map` is compiled along with it. Values and errors are unchanged.
-- `UUID`, `IPv6`, `FixedString` and `Decimal` past 64 bits now count as fixed-width wherever the
-  two paths above look for one, having previously been read one column at a time. They travel as
-  raw bytes through a `Ns` struct code and are widened by their converter. On 200k rows of
+  `UInt64, Array(Array(UInt8)), Map(String, Array(UInt8)), Array(Nullable(UInt64))`: 2.1x end to
+  end. Only nesting deeper than four levels keeps the reader path.
+- A `JSON` column now decodes inside the compiled loop, calling the C scanner `json.loads` uses
+  internally rather than going through the argument checks wrapped around it. `loads` scans the text
+  again to see whether anything follows the value; the decoder checks the offset the scanner stopped
+  at instead, so a document with a second value after the first still raises. On 100k rows of
+  `UInt64, JSON` a fetch takes 173 ms against 226 ms. `JSON` inside an `Array`, `Tuple` or `Map` is
+  compiled along with the container. Values and errors are unchanged.
+- `UUID`, `IPv6`, `FixedString` and `Decimal` past 64 bits now count as fixed-width wherever the two
+  paths above look for one, instead of being read one column at a time. They travel as raw bytes
+  through an `Ns` struct code and are widened by their converter. On 200k rows of
   `Decimal128(2), UInt64`: 4.5x; `FixedString(16), UInt64`: 2.5x; `IPv6, UInt64`: 1.7x;
   `UUID, UInt64`: 1.4x, where building the `UUID` objects is most of what is left.
 

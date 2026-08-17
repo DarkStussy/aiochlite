@@ -1257,7 +1257,7 @@ UNCOVERED_TYPES = [
 
 @pytest.mark.parametrize("ch_type", UNCOVERED_TYPES)
 def test_an_uncovered_column_falls_back_to_its_own_reader(ch_type: str):
-    """One column the generator cannot emit must not cost the row the compiled path."""
+    """One column the generator cannot emit must not cost the whole row its compiled path."""
     compiled = rowbinary._compiled_row_decoder(("UInt64", ch_type), "UTC", as_tuple=True)
 
     assert compiled is not None
@@ -1296,7 +1296,7 @@ def test_compiled_cache_holds_no_converters():
     ],
 )
 def test_reading_past_the_end_raises_a_decode_error(method: str, size: int):
-    """`struct.error` is no ValueError, so an unchecked read escaped the decode boundary."""
+    """`struct.error` is not a ValueError, so an unchecked read slipped past the decode boundary."""
     reader = rowbinary._BinaryReader(bytes(size - 1))
 
     with pytest.raises(ValueError, match="Unexpected end of data"):

@@ -50,17 +50,16 @@ A small, pure-Python async client for ClickHouse over HTTP. Results are decoded 
 - **One dependency**: `aiohttp`, joined by `tzdata` on Windows, which ships no timezone
   database of its own. aiochlite itself ships no compiled extensions.
 - **Server-side query parameters**: values are sent as ClickHouse `param_*` and never interpolated into the query text.
-- **Fast for pure Python**: in the [benchmark below](#benchmarks), where every client runs in its default configuration, `fetch_rows()` matches `clickhouse-connect` and its compiled C parser on flat columns, trails it by 31%-57% on string-heavy and container-heavy rows, and is 2.1x-2.2x faster than `aiochclient` throughout.
+- **Fast for pure Python**: in the [benchmark below](#benchmarks), with every client in its default configuration, `fetch_rows()` keeps up with `clickhouse-connect` and its compiled C parser on flat columns, and is 2.1x-2.2x faster than `aiochclient` everywhere. On string-heavy and container-heavy rows it trails `clickhouse-connect` by 31%-57%.
 - **Typed**: complete type hints for IDEs and static type checkers.
 - **Focused API**: ClickHouse over HTTP, without pandas, numpy, Arrow or Polars integrations.
 - **Tested** on Python 3.12–3.14 against ClickHouse 26.3, with additional compatibility coverage
   for ClickHouse 25.8 LTS.
 
-**Choosing a client.** For DataFrame integrations, or for column-oriented results, use the official
-[clickhouse-connect](https://github.com/ClickHouse/clickhouse-connect): it also has a real asyncio
-client, and it returns numpy, pandas, Arrow and Polars. It also stays ahead on schemas built from
-nested containers. Reach for aiochlite when you want a small async client with a single dependency
-that just returns rows.
+**Choosing a client.** For DataFrames or column-oriented results, use the official
+[clickhouse-connect](https://github.com/ClickHouse/clickhouse-connect) — it has a real asyncio
+client, returns numpy, pandas, Arrow and Polars, and stays ahead on string-heavy and nested schemas.
+Reach for aiochlite when you want a small async client with one dependency that just returns rows.
 
 ## Installation
 
@@ -185,10 +184,10 @@ on first access instead:
 client = AsyncChClient("http://localhost:8123", lazy_decode=True)
 ```
 
-In the benchmark shapes it started paying off below roughly a third of the selected columns and
-cost up to 45% when every column was read, but the break-even point depends on the column types
-and on how expensive the skipped ones are to decode. Leave it off unless your access pattern
-clearly matches, and measure your own query.
+In the benchmark shapes it started paying off once fewer than about a third of the selected columns
+were read, and cost up to 45% when all of them were. Where it breaks even depends on the column
+types and on how expensive the skipped ones are to decode, so leave it off unless your access
+pattern clearly matches — and measure your own query.
 
 ### Export Formats
 
@@ -475,8 +474,8 @@ Benchmark scripts live in [benchmarks/](benchmarks/).
 > `aiochclient` decodes `TSVWithNamesAndTypes`, `clickhouse-connect` decodes `Native`, and aiochlite decodes
 > `RowBinaryWithNamesAndTypes`. Part of the difference is the wire format rather than the decoder around it.
 
-Latest fetch-and-decode results for 100,000 rows (5 rounds, measured 2026-08-17), on three schemas,
-because decode cost depends far more on the shape of a column than on how many there are:
+Fetch and decode of 100,000 rows, 5 rounds, measured 2026-08-17. Three schemas, because what a
+column costs to decode depends far more on its shape than on how many columns there are:
 
 - **flat columns** — `UInt64, DateTime('UTC'), Tuple(String, UInt16), Array(Decimal(10, 2))`
 - **wide strings** — `UInt64` and nine `String` columns
@@ -492,14 +491,14 @@ because decode cost depends far more on the shape of a column than on how many t
 Versions: `aiochlite` 1.7.0, `clickhouse-connect` 1.7.1, `aiochclient` 2.7.0, Python 3.14.5,
 and ClickHouse 26.3.17.110.
 
-aiochlite decodes all three schemas through a loop compiled for them, as it does for every scalar,
-`Nullable`, `Array`, `Tuple`, `Map` and `JSON`, nested up to four levels deep. A column nested
-deeper still reads through its own closure instead, and that column is as fast as it was before.
+All three schemas decode through a loop compiled for them, as does any schema of scalars and of
+`Nullable`, `Array`, `Tuple`, `Map` and `JSON` nested up to four levels deep. A column nested deeper
+reads through its own closure instead, at the speed it had before.
 
-`clickhouse-connect` includes compiled C extensions. `aiochlite` is pure Python with a single
-dependency, `aiohttp`: it matches that C parser on flat columns, and trails it by 31% on nested
-containers and 57% on strings, where there is a length and a `bytes` slice per value and nothing to
-batch. Against `aiochclient` it is 2.1x-2.2x faster on all three.
+`clickhouse-connect` ships compiled C extensions; aiochlite is pure Python on top of `aiohttp`
+alone. It matches that C parser on flat columns and falls behind by 31% on nested containers and
+57% on strings — a string is a length plus a `bytes` slice per value, with nothing to batch.
+Against `aiochclient` it is 2.1x-2.2x faster on all three.
 
 ## License
 

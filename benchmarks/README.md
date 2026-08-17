@@ -24,7 +24,8 @@ This directory contains benchmark scripts for `aiochlite`:
 
   Run the script directly with `.venv/bin/python`. Using `uv run` re-syncs the environment from `uv.lock` and
   removes packages that are not declared there.
-- The output header records the client, Python, and ClickHouse versions, making published results reproducible.
+- The output header records the client, Python and ClickHouse versions, so a published result can be traced back
+  to what produced it.
 - When refreshing the results, update the measurement date and version line in this file, then update the root
   [README.md](../README.md) as well.
 
@@ -182,7 +183,7 @@ Round 5:   348.80 ms (286,695 rows/s, 3.5 µs/row)
 Avg:       345.95 ms (289,060 rows/s, 3.5 µs/row)
 ```
 
-Repeat runs of the same configuration produced averages within approximately 2% of these results.
+Repeat runs of the same configuration landed within about 2% of these averages.
 
 | Schema | `clickhouse-connect` | `aiochlite` (tuples) | `aiochlite` (`Row`) | `aiochclient` |
 | --- | ---: | ---: | ---: | ---: |
@@ -191,16 +192,16 @@ Repeat runs of the same configuration produced averages within approximately 2% 
 | nested containers | 124.02 ms | 162.27 ms | 194.20 ms | 345.95 ms |
 
 Against `clickhouse-connect`, `aiochlite (tuples)` is level on flat columns (1.02x), 1.57x on wide strings and
-1.31x on nested containers. All three schemas compile, so none of the gap is a fallback: it is what a
-compiled Python loop costs against a C parser, and it widens as the share of per-value work grows. Strings
-are the worst of the three because a `String` column is length-plus-bytes per row with nothing to batch,
-where the flat schema's fixed-width columns go through one `struct` call.
+1.31x on nested containers. All three schemas compile, so none of the gap is a fallback: it is what a compiled
+Python loop costs against a C parser, and it widens as the share of per-value work grows. Strings are the worst
+of the three, because a `String` column is a length plus bytes per row with nothing to batch, where the flat
+schema's fixed-width columns go through one `struct` call.
 
-Enabling compression on `aiochlite` closes little of it — 2.18x to 2.05x on a fetch of the wide-string schema
-with no downstream work — so the difference is decoding, not transport.
+Compression closes little of it — 2.18x to 2.05x on a fetch of the wide-string schema with no downstream work —
+so what separates the two is decoding, not transport.
 
-The gap to `aiochlite (Row)` is the `Row` wrapper, one object per row, and it grows with column count: 18%-20%
-on the four-column schemas, 43% on the ten-column one.
+The gap to `aiochlite (Row)` is the `Row` wrapper itself, one object per row, and it grows with column count:
+18%-20% on the four-column schemas, 43% on the ten-column one.
 
 ## Converter benchmark: the value cache
 
@@ -214,11 +215,11 @@ What it measures:
   `_QUERY_VALUE_CACHE_SIZE` values per column and is released with the query. Converters reached through
   `_reader_for_type` outlive the query that built them and keep their own bound (`_VALUE_CACHE_SIZE`).
 - The same schema is decoded twice, by a row reader whose converters memoize and by one whose converters do not.
-  The uncached variant is built by neutralizing `_value_cache` while the converters are created, so both readers
-  run identical conversion logic; the script asserts the patch took effect and that both decoders agree.
+  The uncached variant is built by switching `_value_cache` off while the converters are created, so both readers
+  run identical conversion logic; the script checks that the patch took effect and that both decoders agree.
 - Two payloads: one where values repeat heavily, one where every value is distinct.
-- Timing method: agreement check outside the timer, alternating which decoder runs first, previous result
-  released before the next round, medians next to the raw series.
+- Timing: the agreement check sits outside the timer, the decoders take turns going first, each result is
+  released before the next round, and the medians are printed next to the raw series.
 
 Run:
 
@@ -250,15 +251,15 @@ High cardinality — every timestamp and price distinct
   Cache changes decode time by +43.8%
 ```
 
-The two sides of the trade are both large here: repeated values make the cache save 80%, all-distinct values
-make it cost 44%. Two of the three columns go through a converter, so conversion dominates the decode; on a wide
-schema where one column in ten is a `DateTime` both numbers shrink. Measure it rather than assume it.
+Both sides of the trade are large here: repeated values make the cache save 80%, all-distinct values make it
+cost 44%. Two of the three columns go through a converter, so conversion dominates the decode; on a wide schema
+where one column in ten is a `DateTime` both numbers shrink. Measure it rather than assume it.
 
-The decoders are rebuilt every round on purpose. Sharing one across rounds leaves its cache warm from the round
-before, and the high-cardinality case then reports hits where a single query has only misses — it read as a 70%
+The decoders are rebuilt every round on purpose. Share one across rounds and its cache stays warm from the round
+before, so the high-cardinality case reports hits where a single query would have only misses — it read as a 70%
 saving instead of a cost.
 
-Neither payload covers what happens between them, which is what decided the cache's shape. Three ways to
+Neither payload covers the middle ground between them, and that is what decided the cache's shape. Three ways to
 bound it, on 300k rows of the schema above, against 174 ms with no cache at all:
 
 | Distinct values | Order | `lru_cache` | Fill and stop | Fill and start over |
@@ -268,14 +269,15 @@ bound it, on 300k rows of the schema above, against 174 ms with no cache at all:
 | 100,000 | sorted | — | 150 ms | 110 ms |
 | 100,000 then 100 new hot ones | — | — | 235 ms | 108 ms |
 
-Eviction collapses: at 20k distinct a 4096-entry `lru_cache` is slower than no cache, every lookup missing and
-every insert evicting. Filling and stopping avoids that but keeps whatever it saw first, so it misses forever
-once the working set moves — the last two rows, which are what a column in time order looks like. Starting over
-loses only where access is uniformly random over a cardinality just above the bound. `_QUERY_VALUE_CACHE_SIZE`
-takes the last of the three. A payload for each row above is worth adding.
+Eviction collapses: at 20k distinct values a 4096-entry `lru_cache` is slower than no cache at all, every lookup
+missing and every insert evicting. Filling and stopping avoids that, but it keeps whatever it saw first and so
+misses forever once the working set moves — the last two rows, which are what a column in time order looks like.
+Starting over loses only where access is uniformly random over a cardinality just above the bound.
+`_QUERY_VALUE_CACHE_SIZE` takes that last policy. None of these four rows is in the script — they were measured
+by hand, and each is worth a payload of its own in it.
 
-The bound is also what keeps `stream()` flat, where the cache lives as long as the query while the caller drops
-each row. Peak traced memory:
+The bound is also what keeps `stream()` flat: there the cache lives as long as the query, while the caller drops
+each row as it goes. Peak traced memory:
 
 | Rows | Unbounded | Bounded |
 | --- | ---: | ---: |

@@ -78,7 +78,7 @@ def _exception_message(block: bytes) -> str:
 
 
 class HttpClient:
-    """Wrapper around aiohttp ClientSession for HTTP operations."""
+    """Sends the client's requests, and turns transport and server failures into `ChClientError`s."""
 
     def __init__(self, session: ClientSession, *, headers: Mapping[str, str], owns_session: bool):
         self._session = session

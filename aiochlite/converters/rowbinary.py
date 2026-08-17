@@ -43,8 +43,8 @@ class _ShortData(ValueError):
 
 class _BinaryReader:
     def __init__(self, data: bytes):
-        # Both views of the same payload: memoryview for struct reads, bytes for string slicing,
-        # which is markedly cheaper than slicing a memoryview and converting it back.
+        # Two views of the same payload: memoryview for struct reads, bytes for string slicing,
+        # which is much cheaper than slicing a memoryview and converting it back.
         self._raw = data
         self._data = memoryview(data)
         self._pos = 0
@@ -240,7 +240,7 @@ class _ValueCache(dict[Any, Any]):
 
     def __missing__(self, key: Any) -> Any:
         value = self._convert(key)
-        # Full: start over. Stopping would blind it to a working set that moves; evicting costs more.
+        # Once full, start over: freezing would miss a working set that moves, and evicting costs more.
         if len(self) >= _QUERY_VALUE_CACHE_SIZE:
             self.clear()
 
@@ -537,8 +537,9 @@ def _loads_at(text: str, _idx: int) -> tuple[Any, int]:
     return json.loads(text), len(text)
 
 
-# What `loads` reaches after argument checks and a whitespace scan: 40% of the decode. Those checks
-# also reject a second value, so callers check the end offset instead.
+# The C scanner `loads` calls once it has checked its arguments and skipped leading whitespace. That
+# wrapper is 40% of the decode, and rejecting a second value is part of it, so callers check the
+# offset the scanner stopped at instead.
 _scan_json = getattr(json.JSONDecoder(), "scan_once", _loads_at)
 
 
@@ -927,9 +928,12 @@ _MAX_CODEGEN_DEPTH = 4
 
 
 def _codegen_kind(ch_type: str, server_tz: str | None, depth: int = 0) -> tuple[str, Any] | None:
-    """How the generator emits this column: `("fixed", code)`, `("string", None)`, `("nullable",
-    inner)`, `("array_fixed", code)`, `("array_string", None)`, `("array", element)`, `("tuple",
-    elements)`, `("map", entries)`, or `("reader", None)` for one read through its own closure."""
+    """The kind tag the emitters dispatch on, paired with whatever that kind needs.
+
+    `("fixed", code)`, `("string", None)`, `("json", None)`, `("nullable", inner)`,
+    `("array_fixed", code)`, `("array_string", None)`, `("array", element)`, `("tuple", elements)`,
+    `("map", entries)`, or `("reader", None)` for a column read through its own closure.
+    """
     unwrapped = _strip_low_cardinality(ch_type)
 
     for prefix, build in _CODEGEN_CONTAINERS.items():
@@ -949,8 +953,8 @@ def _codegen_kind(ch_type: str, server_tz: str | None, depth: int = 0) -> tuple[
     if unwrapped == "JSON":
         return "json", None
 
-    # Everything else is read by its closure, in place, so one uncovered column no longer costs
-    # the row the compiled path.
+    # Everything else is read in place by its own closure, so one uncovered column no longer costs
+    # the whole row its compiled path.
     return "reader", None
 
 
@@ -1012,7 +1016,8 @@ def _emit_array_string(slot: str, indent: str, short: str) -> list[str]:
 
 
 def _emit_json(slot: str, indent: str, short: str) -> list[str]:
-    """Scanned in place; `_jn` short of the end means a second value, which only `loads` rejects."""
+    """Scans the text in place. Stopping short of the end means something follows the value, and
+    only `loads` treats that as an error."""
     return [
         *_emit_string(slot, indent, short),
         f"{indent}try:",
@@ -1164,7 +1169,7 @@ class _Emitter:
         return self._emit_tuple(slot, kind[1], indent, short)
 
     def _emit_array(self, slot: str, element: tuple[str, tuple[str, Any]], indent: str, short: str) -> list[str]:
-        """An element the generator has to walk, so the loop goes into a helper like a map's."""
+        """An element that has to be walked one at a time, so the loop lives in a helper, as a map's does."""
         element_type, element_kind = element
         body = self.emit([f"{slot}_e"], [element_type], [element_kind], "        ", "return None, p")
         self.prelude += [
@@ -1355,7 +1360,7 @@ def _reader_rows(
     server_tz: str | None,
     as_tuple: bool,
 ) -> Iterable[Any]:
-    """Lazy rows for a payload the generator declined every column of."""
+    """Lazy rows for a payload whose every column the generator declined."""
     readers = [_reader_for_type(tp, server_tz) for tp in types]
 
     # Spelled out per path instead of sharing one generator: in this loop an extra call per row

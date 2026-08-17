@@ -1,7 +1,7 @@
 """
-IO benchmark comparing ClickHouse HTTP clients under identical server-side data generation.
+IO benchmark comparing ClickHouse HTTP clients on identical data, generated server-side.
 
-Measures end-to-end fetch+decode cost for a fixed query (no client-side insert).
+Measures end-to-end fetch + decode cost for a fixed query, with no client-side insert in the way.
 
 Environment variables:
 - CLICKHOUSE_HOST (default: localhost)

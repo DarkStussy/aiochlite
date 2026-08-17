@@ -9,7 +9,7 @@ Two payloads with the same schema are compared:
 - high cardinality: every value distinct, as in monotonic event time.
 
 Each payload is decoded twice, by a row reader whose converters memoize and by one whose converters
-do not. The uncached variant is built by neutralizing `_value_cache` while the converters are
+do not. The uncached variant is built by switching `_value_cache` off while the converters are
 created, so both readers run identical conversion logic.
 
 Environment variables:
