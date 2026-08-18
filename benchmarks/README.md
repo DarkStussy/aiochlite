@@ -71,139 +71,203 @@ Environment variables:
 
 ### Sample output
 
-Measured 2026-08-17.
+Measured 2026-08-18, on `main` past the 1.7.0 tag: the header prints the version in
+`pyproject.toml`, which is the last released one.
 
 ```
 Clients: aiochlite 1.7.0, aiochclient 2.7.0, clickhouse-connect 1.7.1
 Python: 3.14.5, ClickHouse: 26.3.17.110
-Rows: 100000, rounds: 5, warmup: 2
+Rows: 100000, rounds: 10, warmup: 2
 
 === Schema: flat columns — id UInt64, event_time DateTime('UTC'), payload Tuple(String, UInt16), prices Array(Decimal(10, 2))
-Table: bench_io_770aea740b8b4eabba2910fcb0cb6c13
+Table: bench_io_7a5a250ec6004417b0a821265a1d5e3d
 
 IO benchmark (clickhouse-connect (async))
-Round 1:   149.43 ms (669,222 rows/s, 1.5 µs/row)
-Round 2:   148.28 ms (674,407 rows/s, 1.5 µs/row)
-Round 3:   160.86 ms (621,641 rows/s, 1.6 µs/row)
-Round 4:   148.83 ms (671,886 rows/s, 1.5 µs/row)
-Round 5:   145.30 ms (688,232 rows/s, 1.5 µs/row)
-Avg:       150.54 ms (664,271 rows/s, 1.5 µs/row)
+Round 1:   152.89 ms (654,077 rows/s, 1.5 µs/row)
+Round 2:   152.11 ms (657,440 rows/s, 1.5 µs/row)
+Round 3:   148.92 ms (671,506 rows/s, 1.5 µs/row)
+Round 4:   148.91 ms (671,532 rows/s, 1.5 µs/row)
+Round 5:   149.22 ms (670,145 rows/s, 1.5 µs/row)
+Round 6:   148.65 ms (672,706 rows/s, 1.5 µs/row)
+Round 7:   146.34 ms (683,341 rows/s, 1.5 µs/row)
+Round 8:   148.86 ms (671,763 rows/s, 1.5 µs/row)
+Round 9:   145.15 ms (688,925 rows/s, 1.5 µs/row)
+Round 10:   157.86 ms (633,478 rows/s, 1.6 µs/row)
+Avg:       149.89 ms (667,150 rows/s, 1.5 µs/row)
 
 IO benchmark (aiochlite (Row))
-Round 1:   181.12 ms (552,107 rows/s, 1.8 µs/row)
-Round 2:   179.14 ms (558,208 rows/s, 1.8 µs/row)
-Round 3:   181.17 ms (551,956 rows/s, 1.8 µs/row)
-Round 4:   179.89 ms (555,905 rows/s, 1.8 µs/row)
-Round 5:   183.22 ms (545,803 rows/s, 1.8 µs/row)
-Avg:       180.91 ms (552,763 rows/s, 1.8 µs/row)
+Round 1:   174.55 ms (572,903 rows/s, 1.7 µs/row)
+Round 2:   177.66 ms (562,860 rows/s, 1.8 µs/row)
+Round 3:   178.33 ms (560,743 rows/s, 1.8 µs/row)
+Round 4:   173.69 ms (575,752 rows/s, 1.7 µs/row)
+Round 5:   177.53 ms (563,294 rows/s, 1.8 µs/row)
+Round 6:   174.93 ms (571,652 rows/s, 1.7 µs/row)
+Round 7:   180.20 ms (554,929 rows/s, 1.8 µs/row)
+Round 8:   175.86 ms (568,638 rows/s, 1.8 µs/row)
+Round 9:   181.90 ms (549,742 rows/s, 1.8 µs/row)
+Round 10:   174.15 ms (574,226 rows/s, 1.7 µs/row)
+Avg:       176.88 ms (565,353 rows/s, 1.8 µs/row)
 
 IO benchmark (aiochlite (tuples))
-Round 1:   153.18 ms (652,845 rows/s, 1.5 µs/row)
-Round 2:   161.48 ms (619,259 rows/s, 1.6 µs/row)
-Round 3:   150.59 ms (664,038 rows/s, 1.5 µs/row)
-Round 4:   149.21 ms (670,208 rows/s, 1.5 µs/row)
-Round 5:   154.23 ms (648,379 rows/s, 1.5 µs/row)
-Avg:       153.74 ms (650,456 rows/s, 1.5 µs/row)
+Round 1:   165.79 ms (603,157 rows/s, 1.7 µs/row)
+Round 2:   160.07 ms (624,719 rows/s, 1.6 µs/row)
+Round 3:   162.52 ms (615,328 rows/s, 1.6 µs/row)
+Round 4:   159.70 ms (626,155 rows/s, 1.6 µs/row)
+Round 5:   158.91 ms (629,298 rows/s, 1.6 µs/row)
+Round 6:   154.64 ms (646,682 rows/s, 1.5 µs/row)
+Round 7:   155.66 ms (642,424 rows/s, 1.6 µs/row)
+Round 8:   156.87 ms (637,486 rows/s, 1.6 µs/row)
+Round 9:   159.24 ms (628,000 rows/s, 1.6 µs/row)
+Round 10:   157.89 ms (633,338 rows/s, 1.6 µs/row)
+Avg:       159.13 ms (628,423 rows/s, 1.6 µs/row)
 
 IO benchmark (aiochclient)
-Round 1:   333.15 ms (300,168 rows/s, 3.3 µs/row)
-Round 2:   342.36 ms (292,092 rows/s, 3.4 µs/row)
-Round 3:   333.23 ms (300,091 rows/s, 3.3 µs/row)
-Round 4:   331.88 ms (301,313 rows/s, 3.3 µs/row)
-Round 5:   330.57 ms (302,503 rows/s, 3.3 µs/row)
-Avg:       334.24 ms (299,187 rows/s, 3.3 µs/row)
+Round 1:   339.68 ms (294,398 rows/s, 3.4 µs/row)
+Round 2:   341.09 ms (293,179 rows/s, 3.4 µs/row)
+Round 3:   349.91 ms (285,787 rows/s, 3.5 µs/row)
+Round 4:   337.74 ms (296,082 rows/s, 3.4 µs/row)
+Round 5:   341.54 ms (292,788 rows/s, 3.4 µs/row)
+Round 6:   344.36 ms (290,391 rows/s, 3.4 µs/row)
+Round 7:   343.95 ms (290,741 rows/s, 3.4 µs/row)
+Round 8:   346.48 ms (288,615 rows/s, 3.5 µs/row)
+Round 9:   336.72 ms (296,985 rows/s, 3.4 µs/row)
+Round 10:   335.85 ms (297,752 rows/s, 3.4 µs/row)
+Avg:       341.73 ms (292,626 rows/s, 3.4 µs/row)
 
 === Schema: wide strings — id UInt64, s0 String, s1 String, s2 String, s3 String, s4 String, s5 String, s6 String, s7 String, s8 String
-Table: bench_io_dbe5fe8dc4644afe81668e197bdd053e
+Table: bench_io_0e5bb38cfe3745a0aeaf272f75738dfd
 
 IO benchmark (clickhouse-connect (async))
-Round 1:    77.90 ms (1,283,697 rows/s, 0.8 µs/row)
-Round 2:    78.51 ms (1,273,663 rows/s, 0.8 µs/row)
-Round 3:    71.93 ms (1,390,181 rows/s, 0.7 µs/row)
-Round 4:    70.95 ms (1,409,375 rows/s, 0.7 µs/row)
-Round 5:    70.61 ms (1,416,272 rows/s, 0.7 µs/row)
-Avg:        73.98 ms (1,351,687 rows/s, 0.7 µs/row)
+Round 1:    77.93 ms (1,283,252 rows/s, 0.8 µs/row)
+Round 2:    91.38 ms (1,094,284 rows/s, 0.9 µs/row)
+Round 3:    72.87 ms (1,372,214 rows/s, 0.7 µs/row)
+Round 4:    77.46 ms (1,291,030 rows/s, 0.8 µs/row)
+Round 5:    71.21 ms (1,404,395 rows/s, 0.7 µs/row)
+Round 6:    81.32 ms (1,229,707 rows/s, 0.8 µs/row)
+Round 7:    71.16 ms (1,405,251 rows/s, 0.7 µs/row)
+Round 8:    81.77 ms (1,222,939 rows/s, 0.8 µs/row)
+Round 9:    71.12 ms (1,406,054 rows/s, 0.7 µs/row)
+Round 10:    74.91 ms (1,334,916 rows/s, 0.7 µs/row)
+Avg:        77.11 ms (1,296,794 rows/s, 0.8 µs/row)
 
 IO benchmark (aiochlite (Row))
-Round 1:   164.43 ms (608,155 rows/s, 1.6 µs/row)
-Round 2:   168.60 ms (593,136 rows/s, 1.7 µs/row)
-Round 3:   164.13 ms (609,290 rows/s, 1.6 µs/row)
-Round 4:   166.40 ms (600,980 rows/s, 1.7 µs/row)
-Round 5:   166.24 ms (601,558 rows/s, 1.7 µs/row)
-Avg:       165.96 ms (602,567 rows/s, 1.7 µs/row)
+Round 1:   147.94 ms (675,939 rows/s, 1.5 µs/row)
+Round 2:   150.93 ms (662,551 rows/s, 1.5 µs/row)
+Round 3:   149.81 ms (667,490 rows/s, 1.5 µs/row)
+Round 4:   151.38 ms (660,606 rows/s, 1.5 µs/row)
+Round 5:   150.02 ms (666,572 rows/s, 1.5 µs/row)
+Round 6:   152.65 ms (655,105 rows/s, 1.5 µs/row)
+Round 7:   155.20 ms (644,342 rows/s, 1.6 µs/row)
+Round 8:   149.17 ms (670,398 rows/s, 1.5 µs/row)
+Round 9:   150.36 ms (665,084 rows/s, 1.5 µs/row)
+Round 10:   149.32 ms (669,689 rows/s, 1.5 µs/row)
+Avg:       150.68 ms (663,669 rows/s, 1.5 µs/row)
 
 IO benchmark (aiochlite (tuples))
-Round 1:   116.16 ms (860,897 rows/s, 1.2 µs/row)
-Round 2:   117.17 ms (853,471 rows/s, 1.2 µs/row)
-Round 3:   114.63 ms (872,335 rows/s, 1.1 µs/row)
-Round 4:   116.22 ms (860,447 rows/s, 1.2 µs/row)
-Round 5:   117.89 ms (848,221 rows/s, 1.2 µs/row)
-Avg:       116.41 ms (858,997 rows/s, 1.2 µs/row)
+Round 1:   115.75 ms (863,957 rows/s, 1.2 µs/row)
+Round 2:   120.73 ms (828,290 rows/s, 1.2 µs/row)
+Round 3:   118.02 ms (847,283 rows/s, 1.2 µs/row)
+Round 4:   128.29 ms (779,481 rows/s, 1.3 µs/row)
+Round 5:   120.95 ms (826,773 rows/s, 1.2 µs/row)
+Round 6:   117.87 ms (848,387 rows/s, 1.2 µs/row)
+Round 7:   115.75 ms (863,944 rows/s, 1.2 µs/row)
+Round 8:   115.49 ms (865,885 rows/s, 1.2 µs/row)
+Round 9:   115.57 ms (865,265 rows/s, 1.2 µs/row)
+Round 10:   116.37 ms (859,352 rows/s, 1.2 µs/row)
+Avg:       118.48 ms (844,031 rows/s, 1.2 µs/row)
 
 IO benchmark (aiochclient)
-Round 1:   255.75 ms (391,012 rows/s, 2.6 µs/row)
-Round 2:   257.46 ms (388,410 rows/s, 2.6 µs/row)
-Round 3:   255.23 ms (391,797 rows/s, 2.6 µs/row)
-Round 4:   257.64 ms (388,144 rows/s, 2.6 µs/row)
-Round 5:   258.77 ms (386,445 rows/s, 2.6 µs/row)
-Avg:       256.97 ms (389,152 rows/s, 2.6 µs/row)
+Round 1:   265.57 ms (376,542 rows/s, 2.7 µs/row)
+Round 2:   261.32 ms (382,671 rows/s, 2.6 µs/row)
+Round 3:   261.00 ms (383,148 rows/s, 2.6 µs/row)
+Round 4:   264.16 ms (378,559 rows/s, 2.6 µs/row)
+Round 5:   260.86 ms (383,353 rows/s, 2.6 µs/row)
+Round 6:   262.15 ms (381,468 rows/s, 2.6 µs/row)
+Round 7:   267.41 ms (373,954 rows/s, 2.7 µs/row)
+Round 8:   261.96 ms (381,734 rows/s, 2.6 µs/row)
+Round 9:   260.40 ms (384,018 rows/s, 2.6 µs/row)
+Round 10:   262.26 ms (381,298 rows/s, 2.6 µs/row)
+Avg:       262.71 ms (380,649 rows/s, 2.6 µs/row)
 
 === Schema: nested containers — id UInt64, nested Array(Array(UInt8)), tags Map(String, Array(UInt8)), opt Array(Nullable(UInt64))
-Table: bench_io_d343f660a1144ce6a23a918172f4126c
+Table: bench_io_d574f825a8ca4a4cb30471407eb669c1
 
 IO benchmark (clickhouse-connect (async))
-Round 1:   121.24 ms (824,824 rows/s, 1.2 µs/row)
-Round 2:   127.71 ms (783,034 rows/s, 1.3 µs/row)
-Round 3:   121.48 ms (823,215 rows/s, 1.2 µs/row)
-Round 4:   125.67 ms (795,733 rows/s, 1.3 µs/row)
-Round 5:   124.02 ms (806,307 rows/s, 1.2 µs/row)
-Avg:       124.02 ms (806,303 rows/s, 1.2 µs/row)
+Round 1:   128.99 ms (775,262 rows/s, 1.3 µs/row)
+Round 2:   132.88 ms (752,579 rows/s, 1.3 µs/row)
+Round 3:   131.11 ms (762,708 rows/s, 1.3 µs/row)
+Round 4:   130.89 ms (764,022 rows/s, 1.3 µs/row)
+Round 5:   121.25 ms (824,712 rows/s, 1.2 µs/row)
+Round 6:   127.03 ms (787,228 rows/s, 1.3 µs/row)
+Round 7:   123.39 ms (810,451 rows/s, 1.2 µs/row)
+Round 8:   130.95 ms (763,663 rows/s, 1.3 µs/row)
+Round 9:   126.25 ms (792,091 rows/s, 1.3 µs/row)
+Round 10:   129.31 ms (773,343 rows/s, 1.3 µs/row)
+Avg:       128.20 ms (780,008 rows/s, 1.3 µs/row)
 
 IO benchmark (aiochlite (Row))
-Round 1:   188.57 ms (530,297 rows/s, 1.9 µs/row)
-Round 2:   205.34 ms (487,006 rows/s, 2.1 µs/row)
-Round 3:   192.25 ms (520,156 rows/s, 1.9 µs/row)
-Round 4:   193.38 ms (517,119 rows/s, 1.9 µs/row)
-Round 5:   191.45 ms (522,320 rows/s, 1.9 µs/row)
-Avg:       194.20 ms (514,937 rows/s, 1.9 µs/row)
+Round 1:   188.40 ms (530,776 rows/s, 1.9 µs/row)
+Round 2:   185.62 ms (538,732 rows/s, 1.9 µs/row)
+Round 3:   186.73 ms (535,542 rows/s, 1.9 µs/row)
+Round 4:   191.45 ms (522,331 rows/s, 1.9 µs/row)
+Round 5:   189.58 ms (527,476 rows/s, 1.9 µs/row)
+Round 6:   203.48 ms (491,445 rows/s, 2.0 µs/row)
+Round 7:   192.52 ms (519,430 rows/s, 1.9 µs/row)
+Round 8:   192.96 ms (518,234 rows/s, 1.9 µs/row)
+Round 9:   193.91 ms (515,708 rows/s, 1.9 µs/row)
+Round 10:   195.06 ms (512,672 rows/s, 2.0 µs/row)
+Avg:       191.97 ms (520,912 rows/s, 1.9 µs/row)
 
 IO benchmark (aiochlite (tuples))
-Round 1:   161.47 ms (619,313 rows/s, 1.6 µs/row)
-Round 2:   161.76 ms (618,193 rows/s, 1.6 µs/row)
-Round 3:   161.55 ms (619,011 rows/s, 1.6 µs/row)
-Round 4:   160.33 ms (623,713 rows/s, 1.6 µs/row)
-Round 5:   166.24 ms (601,537 rows/s, 1.7 µs/row)
-Avg:       162.27 ms (616,257 rows/s, 1.6 µs/row)
+Round 1:   165.48 ms (604,300 rows/s, 1.7 µs/row)
+Round 2:   164.50 ms (607,900 rows/s, 1.6 µs/row)
+Round 3:   163.46 ms (611,768 rows/s, 1.6 µs/row)
+Round 4:   164.85 ms (606,624 rows/s, 1.6 µs/row)
+Round 5:   161.91 ms (617,611 rows/s, 1.6 µs/row)
+Round 6:   166.32 ms (601,243 rows/s, 1.7 µs/row)
+Round 7:   161.38 ms (619,653 rows/s, 1.6 µs/row)
+Round 8:   168.63 ms (593,006 rows/s, 1.7 µs/row)
+Round 9:   165.74 ms (603,338 rows/s, 1.7 µs/row)
+Round 10:   164.27 ms (608,743 rows/s, 1.6 µs/row)
+Avg:       164.66 ms (607,329 rows/s, 1.6 µs/row)
 
 IO benchmark (aiochclient)
-Round 1:   344.27 ms (290,469 rows/s, 3.4 µs/row)
-Round 2:   345.12 ms (289,756 rows/s, 3.5 µs/row)
-Round 3:   347.16 ms (288,052 rows/s, 3.5 µs/row)
-Round 4:   344.39 ms (290,366 rows/s, 3.4 µs/row)
-Round 5:   348.80 ms (286,695 rows/s, 3.5 µs/row)
-Avg:       345.95 ms (289,060 rows/s, 3.5 µs/row)
+Round 1:   354.92 ms (281,751 rows/s, 3.5 µs/row)
+Round 2:   365.82 ms (273,355 rows/s, 3.7 µs/row)
+Round 3:   351.50 ms (284,497 rows/s, 3.5 µs/row)
+Round 4:   359.79 ms (277,940 rows/s, 3.6 µs/row)
+Round 5:   362.16 ms (276,123 rows/s, 3.6 µs/row)
+Round 6:   364.42 ms (274,406 rows/s, 3.6 µs/row)
+Round 7:   352.83 ms (283,420 rows/s, 3.5 µs/row)
+Round 8:   362.75 ms (275,671 rows/s, 3.6 µs/row)
+Round 9:   350.13 ms (285,612 rows/s, 3.5 µs/row)
+Round 10:   354.98 ms (281,705 rows/s, 3.5 µs/row)
+Avg:       357.93 ms (279,384 rows/s, 3.6 µs/row)
 ```
 
-Repeat runs of the same configuration landed within about 2% of these averages.
+The sample was taken with `BENCH_ROUNDS=10`; the default 5 gives the same picture with noisier averages.
+Repeat runs of the same configuration landed within about 5% of these averages, except for the `Row`-to-tuples
+gap on the ten-column schema, which moved between 22% and 37% across runs.
 
 | Schema | `clickhouse-connect` | `aiochlite` (tuples) | `aiochlite` (`Row`) | `aiochclient` |
 | --- | ---: | ---: | ---: | ---: |
-| flat columns | 150.54 ms | 153.74 ms | 180.91 ms | 334.24 ms |
-| wide strings | 73.98 ms | 116.41 ms | 165.96 ms | 256.97 ms |
-| nested containers | 124.02 ms | 162.27 ms | 194.20 ms | 345.95 ms |
+| flat columns | 149.89 ms | 159.13 ms | 176.88 ms | 341.73 ms |
+| wide strings | 77.11 ms | 118.48 ms | 150.68 ms | 262.71 ms |
+| nested containers | 128.20 ms | 164.66 ms | 191.97 ms | 357.93 ms |
 
-Against `clickhouse-connect`, `aiochlite (tuples)` is level on flat columns (1.02x), 1.57x on wide strings and
-1.31x on nested containers. All three schemas compile, so none of the gap is a fallback: it is what a compiled
+Against `clickhouse-connect`, `aiochlite (tuples)` is close on flat columns (1.06x), 1.54x on wide strings and
+1.28x on nested containers. All three schemas compile, so none of the gap is a fallback: it is what a compiled
 Python loop costs against a C parser, and it widens as the share of per-value work grows. Strings are the worst
 of the three, because a `String` column is a length plus bytes per row with nothing to batch, where the flat
 schema's fixed-width columns go through one `struct` call.
 
-Compression barely moves it: with `enable_compression=True` the wide-string ratio went from 2.18x to 2.05x. That
+Compression barely moves it: with `enable_compression=True` the wide-string ratio went from 2.24x to 2.17x. That
 one was measured separately, on a fetch with no downstream work, and is not part of the output above. What
 separates the two clients is decoding, not transport.
 
 The gap to `aiochlite (Row)` is the `Row` wrapper itself, one object per row, and it grows with column count:
-18%-20% on the four-column schemas, 43% on the ten-column one.
+11% and 17% on the four-column schemas, 27% on the ten-column one. That last figure is the least stable number
+here, so treat it as a range rather than a point.
 
 ## Decoder benchmark: per-field reads vs the current path
 
