@@ -254,7 +254,7 @@ class AsyncChClient:
 
                 index = {name: idx for idx, name in enumerate(names)}
                 async for values in parser.rows():
-                    yield Row(names, values, index=index)
+                    yield Row(names, values, index)
 
     async def _fetch(self, params: dict[str, Any], data: str | FormData) -> list[Row]:
         payload, tz = await self._http_client.read(self._url, params=params, data=data)
@@ -267,7 +267,7 @@ class AsyncChClient:
             )
 
             index = {name: idx for idx, name in enumerate(names)}
-            return [Row(names, values, index=index) for values in rows]
+            return [Row(names, values, index) for values in rows]
 
     async def execute(self, query: str, **kwargs: Unpack[QueryOptions]):
         """Execute query without returning results.

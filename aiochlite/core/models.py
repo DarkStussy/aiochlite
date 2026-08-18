@@ -28,34 +28,25 @@ class ExternalData(NamedTuple):
 class Row(Mapping[str, Any]):
     """Query result row, keyed by column name. `fetch_rows()` returns tuples for positional access."""
 
-    __slots__ = ("_dict", "_index", "_names", "_values")
+    __slots__ = ("_index", "_names", "_values")
 
-    def __init__(self, names: list[str], values: Sequence[Any], *, index: Mapping[str, int] | None = None):
+    def __init__(self, names: list[str], values: Sequence[Any], index: Mapping[str, int] | None = None):
+        # `index` stays positional: by keyword it costs more per row than the rest of this method.
         self._names = names
         self._values = values
-        self._index = index
-        self._dict: dict[str, Any] | None = None
+        self._index = index if index is not None else {name: idx for idx, name in enumerate(names)}
 
     def _as_dict(self) -> dict[str, Any]:
-        if self._dict is None:
-            self._dict = dict(zip(self._names, self._values, strict=False))
-
-        return self._dict
+        return dict(zip(self._names, self._values, strict=False))
 
     def __getattr__(self, name: str) -> Any:
-        if self._index is not None and name in self._index:
+        try:
             return self._values[self._index[name]]
-
-        mapping = self._as_dict()
-        if name in mapping:
-            return mapping[name]
-
-        raise AttributeError(f"Row has no column '{name}'")
+        except KeyError:
+            raise AttributeError(f"Row has no column '{name}'") from None
 
     def __getitem__(self, key: str) -> Any:
-        if self._index is not None and key in self._index:
-            return self._values[self._index[key]]
-        return self._as_dict()[key]
+        return self._values[self._index[key]]
 
     def __iter__(self) -> Iterator[str]:
         return iter(self._names)

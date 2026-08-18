@@ -12,7 +12,7 @@ class TestRow:
         assert row.id == 1
         assert row.name == "alice"
 
-    def test_attribute_access_via_dict_fallback(self):
+    def test_attribute_access_without_index(self):
         row = Row(["id", "name"], [1, "alice"])
         assert row.id == 1
         assert row.name == "alice"
@@ -31,7 +31,7 @@ class TestRow:
         assert row["id"] == 1
         assert row["name"] == "alice"
 
-    def test_getitem_via_dict_fallback(self):
+    def test_getitem_without_index(self):
         row = Row(["id", "name"], [1, "alice"])
         assert row["id"] == 1
         assert row["name"] == "alice"
@@ -72,10 +72,15 @@ class TestRow:
         assert "id" in row
         assert "missing" not in row
 
-    def test_dict_cache_is_lazy(self):
-        row = Row(["id"], [1], index={"id": 0})
-        assert row._dict is None
-        _ = row["id"]
-        assert row._dict is None
-        _ = repr(row)
-        assert row._dict is not None
+    def test_row_holds_no_per_row_dict(self):
+        """One dict per row would cost more to hold than the values themselves."""
+        row = Row(["id"], [1], {"id": 0})
+        assert Row.__slots__ == ("_index", "_names", "_values")
+        assert not hasattr(row, "__dict__")
+
+    def test_duplicate_names_keep_the_column_count(self):
+        """The server disambiguates duplicates, but length and iteration must not depend on that."""
+        row = Row(["a", "a"], [1, 2])
+        assert len(row) == 2
+        assert list(row) == ["a", "a"]
+        assert row["a"] == 2
