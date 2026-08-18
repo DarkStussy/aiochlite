@@ -504,4 +504,4 @@ to batch. Against `aiochclient` it is 2.1x-2.3x faster on all three.
 
 MIT License
 
-Copyright (c) 2025 darkstussy
+Copyright (c) 2026 darkstussy
