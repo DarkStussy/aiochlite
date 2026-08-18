@@ -195,11 +195,17 @@ async def _setup_table(client: aiochlite.AsyncChClient, schema: Schema, table: s
 
 def _print_rounds(label: str, rows: int, durations: list[float]) -> None:
     print(f"\nIO benchmark ({label})")
+    width = len(f"Round {len(durations)}:")
+
+    def line(name: str, seconds: float) -> str:
+        rate = f"{rows / seconds:,.0f} rows/s, {(seconds / rows) * 1e6:,.1f} µs/row"
+        return f"{name:<{width}} {seconds * 1000:8.2f} ms ({rate})"
+
     for idx, dur in enumerate(durations, start=1):
-        print(f"Round {idx}: {dur * 1000:8.2f} ms ({rows / dur:,.0f} rows/s, {(dur / rows) * 1e6:,.1f} µs/row)")
+        print(line(f"Round {idx}:", dur))
+
     if durations:
-        avg = sum(durations) / len(durations)
-        print(f"Avg:     {avg * 1000:8.2f} ms ({rows / avg:,.0f} rows/s, {(avg / rows) * 1e6:,.1f} µs/row)")
+        print(line("Avg:", sum(durations) / len(durations)))
 
 
 async def _bench_aiochlite_rows(schema: Schema, table: str) -> None:
