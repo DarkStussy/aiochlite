@@ -5,6 +5,8 @@ from enum import Enum, IntEnum, IntFlag, StrEnum
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from aiochlite.converters import quote_identifier, to_clickhouse, to_json
 
 
@@ -313,6 +315,40 @@ class TestEnumMembers:
         parsed = json.loads(to_json({"a": Color.RED, "b": Level.HIGH, "c": Style.BOLD, "d": When.LAUNCH}))
 
         assert parsed == {"a": "red", "b": 2, "c": "bold", "d": "2025-12-14 10:00:00"}
+
+
+class TestJsonMapKeys:
+    """`dumps` offers `default` the values only, so a key it will not take has to be rendered first."""
+
+    def test_a_member_keying_a_map_is_rendered(self):
+        assert json.loads(to_json({"m": {Color.RED: 1}})) == {"m": {"red": 1}}
+
+    def test_a_key_whose_value_needs_converting_still_gets_it(self):
+        assert json.loads(to_json({"m": {When.LAUNCH: 1}})) == {"m": {"2025-12-14 10:00:00": 1}}
+
+    @pytest.mark.parametrize(
+        ("key", "rendered"),
+        [
+            (UUID("550e8400-e29b-41d4-a716-446655440000"), "550e8400-e29b-41d4-a716-446655440000"),
+            (date(2025, 12, 14), "2025-12-14"),
+            (Decimal("99.99"), "99.99"),
+        ],
+    )
+    def test_the_other_keys_dumps_rejects(self, key: object, rendered: str):
+        """Keying a Map by one of these never worked, Enum or not."""
+        assert json.loads(to_json({"m": {key: 1}})) == {"m": {rendered: 1}}
+
+    def test_a_key_nested_below_the_row_is_reached(self):
+        assert json.loads(to_json({"rows": [{"m": {Color.RED: 1}}]})) == {"rows": [{"m": {"red": 1}}]}
+
+    def test_rendering_keys_leaves_the_values_alone(self):
+        assert json.loads(to_json({"m": {Color.RED: When.LAUNCH}})) == {"m": {"red": "2025-12-14 10:00:00"}}
+
+    def test_a_row_without_such_a_key_is_untouched(self):
+        """The walk is the fallback: a row `dumps` takes as it is must never reach it."""
+        row = {"id": 1, "ts": datetime(2025, 12, 14, 10, 0, 0), "tags": ["a", "b"]}
+
+        assert json.loads(to_json(row)) == {"id": 1, "ts": "2025-12-14 10:00:00", "tags": ["a", "b"]}
 
 
 class TestQuoteIdentifier:

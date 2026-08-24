@@ -6,9 +6,14 @@
 - **An `enum.Enum` member sent as a parameter or inserted arrived as `Color.RED`, not `red`** — the
   only conversion that reached the server wrong rather than raising. It fell through to `str()`,
   which renders a member, not its value. A member now stands for its value everywhere: parameters,
-  array, tuple and map literals, map keys, and inserts. A value that needs converting in its own
-  right, such as a `datetime`, still gets it. `IntEnum` and `StrEnum` happened to work already,
-  since `str()` on those is `int.__str__` and `str.__str__`.
+  array, tuple and map literals, and inserts. A value that needs converting in its own right, such
+  as a `datetime`, still gets it. `IntEnum` and `StrEnum` happened to work already, since `str()`
+  on those is `int.__str__` and `str.__str__`.
+- **A `Map` keyed by a `UUID`, `date`, `Decimal` or `Enum` could not be inserted**, raising
+  `TypeError: keys must be str, int, float, bool or None`. `json.dumps` offers its `default` hook
+  the values of a document, never the keys, so a key it does not accept raised instead of being
+  converted. Such keys are now rendered by the same rules as values. Rendering every key upfront
+  costs a row 33%-90%, so the pass runs only over a row that `dumps` has already refused.
 
 ## 1.8.0 (2026-08-25)
 

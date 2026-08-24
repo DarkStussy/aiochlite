@@ -1,4 +1,5 @@
 from collections.abc import AsyncIterable, AsyncIterator, Iterable, Iterator
+from enum import Enum
 
 import pytest
 
@@ -165,3 +166,28 @@ async def test_async_source_is_batched_the_same_way():
     chunks = [chunk async for chunk in build_insert_body("INSERT\n", rows())]
     assert len(chunks) > 2
     assert b"".join(chunks) == b"INSERT\n" + (row.encode() + b"\n") * 6
+
+
+class Colour(Enum):
+    RED = "red"
+
+
+async def test_serialize_rows_renders_a_map_key_a_row_is_keyed_by():
+    """`json.dumps` takes no Enum key, and a row reaches it through here."""
+    taken = await take_first_row([{"m": {Colour.RED: 1}, "s": Colour.RED}])
+    assert taken is not None
+
+    format_name, rows = serialize_rows(*taken)
+    assert format_name == "JSONEachRow"
+    assert isinstance(rows, Iterable)
+    assert list(rows) == ['{"m":{"red":1},"s":"red"}']
+
+
+async def test_serialize_rows_renders_such_a_key_in_a_tuple_row():
+    taken = await take_first_row([({Colour.RED: 1}, Colour.RED)])
+    assert taken is not None
+
+    format_name, rows = serialize_rows(*taken)
+    assert format_name == "JSONCompactEachRow"
+    assert isinstance(rows, Iterable)
+    assert list(rows) == ['[{"red":1},"red"]']
