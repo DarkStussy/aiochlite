@@ -1,3 +1,5 @@
+import pytest
+
 from aiochlite import AsyncChClient
 from aiochlite.core import ChClientCore
 
@@ -7,6 +9,16 @@ async def test_lazy_decode_is_disabled_by_default():
     client = AsyncChClient()
     try:
         assert client._lazy_decode is False
+    finally:
+        await client.close()
+
+
+async def test_a_misspelled_query_option_is_rejected():
+    """`binary_columns` is filtered out of the options; the rest still have to be real."""
+    client = AsyncChClient()
+    try:
+        with pytest.raises(TypeError, match="settngs"):
+            await client.fetch("SELECT 1", settngs={"max_rows_to_read": 1})  # pyright: ignore[reportCallIssue]
     finally:
         await client.close()
 

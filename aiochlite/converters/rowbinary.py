@@ -2,18 +2,29 @@ import ipaddress
 import json
 import re
 import struct
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Collection, Sequence
+from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from functools import lru_cache
 from types import CodeType
-from typing import Any, Callable, Iterable, Literal, Protocol, overload
+from typing import Any, Callable, Generator, Iterable, Literal, Protocol, overload
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-from aiochlite.exceptions import ChProtocolError
+from aiochlite.exceptions import ChArgumentError, ChProtocolError
 
-from ._type_parsing import extract_base_type, extract_timezone, parse_timezone, split_type_arguments, unwrap_wrappers
+from ._type_parsing import (
+    BINARY_TYPE,
+    FIXED_BINARY_TYPE,
+    extract_base_type,
+    extract_timezone,
+    holds_text,
+    parse_timezone,
+    split_type_arguments,
+    to_binary_type,
+    unwrap_wrappers,
+)
 
 
 class _Reader(Protocol):
@@ -31,6 +42,7 @@ class _Reader(Protocol):
     def read_float64(self) -> float: ...
     def read_varuint(self) -> int: ...
     def read_string(self) -> str: ...
+    def read_bytes(self, size: int) -> bytes: ...
     def skip(self, size: int): ...
 
     @property
@@ -393,7 +405,9 @@ def _fixedstring_size(ch_type: str) -> int:
 
 
 def _fixedstring_from_bytes(raw: bytes) -> str:
-    return raw.decode("utf-8", errors="replace").rstrip("\x00")
+    # Strict, as `String` is: replacing bad bytes would hand back a mangled value that reads as
+    # text. Binary columns go through `binary_columns`.
+    return raw.decode("utf-8").rstrip("\x00")
 
 
 def _fixedstring_reader(ch_type: str) -> Callable[[_Reader], str]:
@@ -403,6 +417,19 @@ def _fixedstring_reader(ch_type: str) -> Callable[[_Reader], str]:
         return _fixedstring_from_bytes(reader._read(size).tobytes())
 
     return _read_fixedstring
+
+
+def _binary_reader(reader: _Reader) -> bytes:
+    return reader.read_bytes(reader.read_varuint())
+
+
+def _fixedbinary_reader(ch_type: str) -> Callable[[_Reader], bytes]:
+    size = _fixedstring_size(ch_type)
+
+    def _read_fixedbinary(reader: _Reader) -> bytes:
+        return reader.read_bytes(size)
+
+    return _read_fixedbinary
 
 
 @lru_cache(maxsize=512)
@@ -554,6 +581,7 @@ def _json_reader(reader: _Reader) -> Any:
 
 
 _PRIMITIVE_READERS: dict[str, Callable[[_Reader], Any]] = {
+    "Binary": _binary_reader,
     "Bool": lambda r: r.read_uint8() != 0,
     "Float32": lambda r: r.read_float32(),
     "Float64": lambda r: r.read_float64(),
@@ -576,6 +604,7 @@ _COMPLEX_READERS: dict[str, Callable[[str], Callable[[_Reader], Any]]] = {
     "Time64": _time64_reader,
     "Enum16": _enum_reader,
     "Enum8": _enum_reader,
+    "FixedBinary": _fixedbinary_reader,
     "FixedString": _fixedstring_reader,
     "IPv4": _ipv4_reader,
     "IPv6": _ipv6_reader,
@@ -653,15 +682,16 @@ def _seconds_to_timedelta(seconds: int) -> timedelta:
     return timedelta(seconds=seconds)
 
 
-# Fixed-width types whose raw scalar still needs converting. Each entry returns the struct
-# format code plus the converter.
-_FIXED_CONVERTERS: dict[str, Callable[[str, str | None], tuple[str, Callable[[Any], Any]]]] = {
+# Fixed-width types whose raw scalar still needs converting. Each entry returns the struct format
+# code plus the converter, or None where the code already yields the value (`FixedBinary`).
+_FIXED_CONVERTERS: dict[str, Callable[[str, str | None], tuple[str, Callable[[Any], Any] | None]]] = {
     "Date": lambda _ch_type, _tz: ("H", _days_to_date),
     "Date32": lambda _ch_type, _tz: ("i", _days_to_date),
     "DateTime": lambda ch_type, tz: ("I", _value_cache(_datetime_converter(ch_type, tz))),
     "DateTime64": lambda ch_type, tz: ("q", _value_cache(_datetime64_converter(ch_type, tz))),
     "Enum8": lambda ch_type, _tz: ("b", _enum_converter(ch_type)),
     "Enum16": lambda ch_type, _tz: ("h", _enum_converter(ch_type)),
+    "FixedBinary": lambda ch_type, _tz: (f"{_fixedstring_size(ch_type)}s", None),
     "FixedString": lambda ch_type, _tz: (f"{_fixedstring_size(ch_type)}s", _fixedstring_from_bytes),
     "IPv4": lambda _ch_type, _tz: ("I", ipaddress.IPv4Address),
     "IPv6": lambda _ch_type, _tz: ("16s", ipaddress.IPv6Address),
@@ -850,6 +880,23 @@ def _read_string_array(data: bytes, pos: int, count: int, end: int) -> tuple[lis
     return values, pos
 
 
+def _read_bytes_array(data: bytes, pos: int, count: int, end: int) -> tuple[list[bytes] | None, int]:
+    """`_read_string_array` without the decode."""
+    values: list[bytes] = []
+    append = values.append
+    for _ in range(count):
+        length, pos = _read_varint(data, pos, end)
+        stop = pos + length
+        if length < 0 or stop > end:
+            return None, pos
+
+        # `bytes()`: streaming feeds a bytearray, and slicing it would give one back.
+        append(bytes(data[pos:stop]))
+        pos = stop
+
+    return values, pos
+
+
 def _strip_low_cardinality(ch_type: str) -> str:
     unwrapped = ch_type.strip()
     while unwrapped.startswith("LowCardinality(") and unwrapped.endswith(")"):
@@ -878,6 +925,9 @@ def _codegen_array_kind(element_type: str, server_tz: str | None, depth: int) ->
     element = _strip_low_cardinality(element_type)
     if element == "String":
         return "array_string", None
+
+    if element == BINARY_TYPE:
+        return "array_binary", None
 
     # A flat array reads in one struct call, which beats any per-element loop.
     field = _fixed_field(element, server_tz)
@@ -926,13 +976,17 @@ _CODEGEN_CONTAINERS: dict[str, Callable[[str, str | None, int], tuple[str, Any]]
 # Containers deep enough to nest this far are rare, and each level multiplies the code emitted.
 _MAX_CODEGEN_DEPTH = 4
 
+# Variable-width scalars read inline, each by the emitter its kind names.
+_CODEGEN_SCALAR_KINDS: dict[str, str] = {"String": "string", BINARY_TYPE: "binary", "JSON": "json"}
+
 
 def _codegen_kind(ch_type: str, server_tz: str | None, depth: int = 0) -> tuple[str, Any] | None:
     """The kind tag the emitters dispatch on, paired with whatever that kind needs.
 
-    `("fixed", code)`, `("string", None)`, `("json", None)`, `("nullable", inner)`,
-    `("array_fixed", code)`, `("array_string", None)`, `("array", element)`, `("tuple", elements)`,
-    `("map", entries)`, or `("reader", None)` for a column read through its own closure.
+    `("fixed", code)`, `("string", None)`, `("binary", None)`, `("json", None)`,
+    `("nullable", inner)`, `("array_fixed", code)`, `("array_string", None)`,
+    `("array_binary", None)`, `("array", element)`, `("tuple", elements)`, `("map", entries)`,
+    or `("reader", None)` for a column read through its own closure.
     """
     unwrapped = _strip_low_cardinality(ch_type)
 
@@ -947,11 +1001,9 @@ def _codegen_kind(ch_type: str, server_tz: str | None, depth: int = 0) -> tuple[
     if field is not None:
         return "fixed", field[0]
 
-    if unwrapped == "String":
-        return "string", None
-
-    if unwrapped == "JSON":
-        return "json", None
+    scalar = _CODEGEN_SCALAR_KINDS.get(unwrapped)
+    if scalar is not None:
+        return scalar, None
 
     # Everything else is read in place by its own closure, so one uncovered column no longer costs
     # the whole row its compiled path.
@@ -994,6 +1046,17 @@ def _emit_string(slot: str, indent: str, short: str) -> list[str]:
     ]
 
 
+def _emit_binary(slot: str, indent: str, short: str) -> list[str]:
+    return [
+        *_emit_varuint(indent, short),
+        f"{indent}_e = p + _l",
+        f"{indent}if _e > end: {short}",
+        # `bytes()`: streaming feeds a bytearray. Over `bytes` it hands back the same object.
+        f"{indent}v{slot} = bytes(data[p:_e])",
+        f"{indent}p = _e",
+    ]
+
+
 def _emit_array_fixed(slot: str, code: str, converted: set[str], indent: str, short: str) -> list[str]:
     size = struct.calcsize(f"<{code}")
     elements = f"_u{slot}[_l](data, p)"
@@ -1015,6 +1078,14 @@ def _emit_array_string(slot: str, indent: str, short: str) -> list[str]:
     ]
 
 
+def _emit_array_binary(slot: str, indent: str, short: str) -> list[str]:
+    return [
+        *_emit_varuint(indent, short),
+        f"{indent}v{slot}, p = _binaries(data, p, _l, end)",
+        f"{indent}if v{slot} is None: {short}",
+    ]
+
+
 def _emit_json(slot: str, indent: str, short: str) -> list[str]:
     """Scans the text in place. Stopping short of the end means something follows the value, and
     only `loads` treats that as an error."""
@@ -1031,8 +1102,10 @@ def _emit_json(slot: str, indent: str, short: str) -> list[str]:
 # The emitters needing nothing but a slot; the rest also register something in the namespace.
 _SIMPLE_EMITTERS: dict[str, Callable[[str, str, str], list[str]]] = {
     "string": _emit_string,
+    "binary": _emit_binary,
     "json": _emit_json,
     "array_string": _emit_array_string,
+    "array_binary": _emit_array_binary,
 }
 
 
@@ -1076,6 +1149,7 @@ class _Emitter:
         self.namespace: dict[str, Any] = {
             "_varint": _read_varint,
             "_strings": _read_string_array,
+            "_binaries": _read_bytes_array,
             "_Reader": _BinaryReader,
             "_Short": _ShortData,
             "_scan": _scan_json,
@@ -1301,15 +1375,75 @@ def _batch_decoder(types: list[str], server_tz: str | None) -> _BatchDecoder | N
     return _row_decoder(types, server_tz, as_tuple=False)
 
 
+def decode_types(names: list[str], types: list[str], binary_columns: Collection[str] | str | None) -> list[str]:
+    """The types the decoders are built from, with `binary_columns` rewritten to bytes.
+
+    Args:
+        names (list[str]): Column names from the header.
+        types (list[str]): Column types from the header.
+        binary_columns (Collection[str] | str | None): Columns to decode as ``bytes``, or one
+            column name.
+
+    Returns:
+        list[str]: `types` itself when there is nothing to rewrite, else a rewritten copy.
+
+    Raises:
+        ChArgumentError: If a name is not a result column or holds no text.
+    """
+    if not binary_columns:
+        return types
+
+    # A `str` is a `Collection[str]`, and iterating one would look for columns named `b`, `l`, `o`.
+    wanted = frozenset([binary_columns] if isinstance(binary_columns, str) else binary_columns)
+    missing = wanted.difference(names)
+    if missing:
+        raise ChArgumentError(f"binary_columns names columns the query did not select: {', '.join(sorted(missing))}")
+
+    textless = sorted(
+        name for name, ch_type in zip(names, types, strict=True) if name in wanted and not holds_text(ch_type)
+    )
+    if textless:
+        raise ChArgumentError(f"binary_columns names columns holding no String/FixedString: {', '.join(textless)}")
+
+    return [to_binary_type(ch_type) if name in wanted else ch_type for name, ch_type in zip(names, types, strict=True)]
+
+
+def _utf8_error(names: list[str], types: list[str], error: UnicodeDecodeError) -> ChProtocolError:
+    """A failed decode reported as what it is, with the columns it could have come from."""
+    candidates = [name for name, ch_type in zip(names, types, strict=True) if holds_text(ch_type)]
+    hint = (
+        f" Pass binary_columns={{{', '.join(repr(name) for name in candidates)}}} to read it as bytes."
+        if candidates
+        else ""
+    )
+    return ChProtocolError(f"A String/FixedString column holds bytes that are not UTF-8: {error}.{hint}")
+
+
+@contextmanager
+def _utf8_errors(names: list[str], types: list[str]) -> Generator[None, None, None]:
+    try:
+        yield
+    except UnicodeDecodeError as error:
+        raise _utf8_error(names, types, error) from error
+
+
 @overload
 def parse_rowbinary_with_names_and_types(
-    data: bytes, server_tz: str | None = ..., *, as_tuple: Literal[False] = ...
+    data: bytes,
+    server_tz: str | None = ...,
+    *,
+    as_tuple: Literal[False] = ...,
+    binary_columns: Collection[str] | str | None = ...,
 ) -> tuple[list[str], list[str], Iterable[list[Any]]]: ...
 
 
 @overload
 def parse_rowbinary_with_names_and_types(
-    data: bytes, server_tz: str | None = ..., *, as_tuple: Literal[True]
+    data: bytes,
+    server_tz: str | None = ...,
+    *,
+    as_tuple: Literal[True],
+    binary_columns: Collection[str] | str | None = ...,
 ) -> tuple[list[str], list[str], Iterable[tuple[Any, ...]]]: ...
 
 
@@ -1318,6 +1452,7 @@ def parse_rowbinary_with_names_and_types(
     server_tz: str | None = None,
     *,
     as_tuple: bool = False,
+    binary_columns: Collection[str] | str | None = None,
 ) -> tuple[list[str], list[str], Iterable[Any]]:
     """
     Parse RowBinaryWithNamesAndTypes payload and return header and row iterator.
@@ -1327,51 +1462,60 @@ def parse_rowbinary_with_names_and_types(
         server_tz (str | None): Fallback timezone name for ``DateTime``/``DateTime64`` columns
             that carry no explicit timezone (the ClickHouse server timezone).
         as_tuple (bool): Yield tuples instead of lists, avoiding a second pass over every row.
+        binary_columns (Collection[str] | str | None): Columns whose ``String``/``FixedString``
+            parts are decoded as ``bytes`` rather than ``str``, or one column name.
 
     Returns:
         names: list of column names
-        types: list of ClickHouse types
+        types: list of ClickHouse types, as the server named them
         rows: iterable of rows (list or tuple of values)
     """
     reader = _BinaryReader(data)
     column_count = reader.read_varuint()
     names = [reader.read_string() for _ in range(column_count)]
     types = [reader.read_string() for _ in range(column_count)]
+    decoded = decode_types(names, types, binary_columns)
 
     # A fixed-width row makes the body one repeating struct: one pass, and a list not a generator.
-    layout = _fixed_row_layout(types, server_tz)
+    layout = _fixed_row_layout(decoded, server_tz)
     if layout is not None:
-        return names, types, _bulk_decode(data, reader.pos, *layout, as_tuple=as_tuple)
+        with _utf8_errors(names, types):
+            return names, types, _bulk_decode(data, reader.pos, *layout, as_tuple=as_tuple)
 
-    decode = _row_decoder(types, server_tz, as_tuple=as_tuple)
+    decode = _row_decoder(decoded, server_tz, as_tuple=as_tuple)
     if decode is not None:
-        rows, pos = decode(data, reader.pos, len(data))
+        with _utf8_errors(names, types):
+            rows, pos = decode(data, reader.pos, len(data))
         # The decoder stops on a row boundary, so anything left over is half a row.
         if pos != len(data):
             raise ValueError("Unexpected end of data")
         return names, types, rows
 
-    return names, types, _reader_rows(reader, types, server_tz, as_tuple)
+    return names, types, _reader_rows(reader, names, types, decoded, server_tz, as_tuple)
 
 
 def _reader_rows(
     reader: _BinaryReader,
+    names: list[str],
     types: list[str],
+    decoded: list[str],
     server_tz: str | None,
     as_tuple: bool,
 ) -> Iterable[Any]:
     """Lazy rows for a payload whose every column the generator declined."""
-    readers = [_reader_for_type(tp, server_tz) for tp in types]
+    readers = [_reader_for_type(tp, server_tz) for tp in decoded]
 
     # Spelled out per path instead of sharing one generator: in this loop an extra call per row
     # costs more than the duplication saves.
     def _rows() -> Iterable[list[Any]]:
-        while not reader.eof:
-            yield [read(reader) for read in readers]
+        with _utf8_errors(names, types):
+            while not reader.eof:
+                yield [read(reader) for read in readers]
 
     def _tuple_rows() -> Iterable[tuple[Any, ...]]:
-        while not reader.eof:
-            yield tuple([read(reader) for read in readers])
+        with _utf8_errors(names, types):
+            while not reader.eof:
+                yield tuple([read(reader) for read in readers])
 
     return _tuple_rows() if as_tuple else _rows()
 
@@ -1500,6 +1644,7 @@ def _tuple_skipper(ch_type: str) -> Callable[[_Reader], None]:
 
 _COMPLEX_SKIPPERS: dict[str, Callable[[str], Callable[[_Reader], None]]] = {
     "Array": lambda ch_type: _array_skipper(ch_type[6:-1]),
+    "Binary": lambda _: lambda reader: reader.skip(reader.read_varuint()),
     "DateTime64": lambda _: lambda reader: reader.skip(8),
     "Time64": lambda _: lambda reader: reader.skip(8),
     "JSON": lambda _: lambda reader: reader.skip(reader.read_varuint()),
@@ -1532,8 +1677,8 @@ def _skipper_for_type(ch_type: str) -> Callable[[_Reader], None]:
     if size is not None:
         return lambda reader: reader.skip(size)
 
-    if base == "FixedString":
-        fixed_size = int(ch_type[ch_type.index("(") + 1 : ch_type.rindex(")")].strip())
+    if base in {"FixedString", FIXED_BINARY_TYPE}:
+        fixed_size = _fixedstring_size(ch_type)
         return lambda reader: reader.skip(fixed_size)
 
     if base.startswith("Decimal"):
@@ -1564,8 +1709,8 @@ def _fixed_width(ch_type: str) -> int | None:
     if size is not None:
         return size
 
-    if base == "FixedString":
-        return int(unwrapped[unwrapped.index("(") + 1 : unwrapped.rindex(")")].strip())
+    if base in {"FixedString", FIXED_BINARY_TYPE}:
+        return _fixedstring_size(unwrapped)
     if base.startswith("Decimal"):
         precision, _ = _decimal_meta(unwrapped)
         return _decimal_size(precision)
@@ -1623,6 +1768,12 @@ class RowBinaryLazyValues(Sequence[Any]):
         # Decoding happens here rather than in the query call, so the boundary has to be here too.
         try:
             value = self._readers[idx](reader)
+        except UnicodeDecodeError as error:
+            # A lazy row carries no names, so the index is all this path can give.
+            raise ChProtocolError(
+                f"Column {idx} holds bytes that are not UTF-8: {error}."
+                " Pass binary_columns={'<column>'} to read it as bytes."
+            ) from error
         except ValueError as error:
             raise ChProtocolError(str(error)) from error
 
@@ -1633,6 +1784,8 @@ class RowBinaryLazyValues(Sequence[Any]):
 def parse_rowbinary_with_names_and_types_lazy(
     data: bytes,
     server_tz: str | None = None,
+    *,
+    binary_columns: Collection[str] | str | None = None,
 ) -> tuple[list[str], list[str], Iterable[RowBinaryLazyValues]]:
     """
     Parse RowBinaryWithNamesAndTypes payload and return rows with lazy per-cell decoding.
@@ -1641,15 +1794,18 @@ def parse_rowbinary_with_names_and_types_lazy(
         data (bytes): RowBinaryWithNamesAndTypes payload.
         server_tz (str | None): Fallback timezone name for ``DateTime``/``DateTime64`` columns
             that carry no explicit timezone (the ClickHouse server timezone).
+        binary_columns (Collection[str] | str | None): Columns whose ``String``/``FixedString``
+            parts are decoded as ``bytes`` rather than ``str``, or one column name.
     """
     reader = _BinaryReader(data)
     column_count = reader.read_varuint()
     names = [reader.read_string() for _ in range(column_count)]
     types = [reader.read_string() for _ in range(column_count)]
-    readers = [_reader_for_type(tp, server_tz) for tp in types]
+    decoded = decode_types(names, types, binary_columns)
+    readers = [_reader_for_type(tp, server_tz) for tp in decoded]
     # Kept independent of the reader walking the rows: a cell may be read mid-iteration.
     value_reader = _BinaryReader(data)
-    template = _lazy_row_template(types)
+    template = _lazy_row_template(decoded)
 
     if template is not None:
         row_offsets, row_width = template
@@ -1660,7 +1816,7 @@ def parse_rowbinary_with_names_and_types_lazy(
                 reader.skip(row_width)
                 yield RowBinaryLazyValues(value_reader, row_offsets, readers, base)
     else:
-        skippers = [_skipper_for_type(tp) for tp in types]
+        skippers = [_skipper_for_type(tp) for tp in decoded]
 
         def _rows() -> Iterable[RowBinaryLazyValues]:
             while not reader.eof:
@@ -1833,7 +1989,14 @@ class _StreamingReader:
 
 
 class RowBinaryWithNamesAndTypesStreamParser:
-    def __init__(self, chunks: AsyncIterator[bytes], *, lazy: bool = False, server_tz: str | None = None):
+    def __init__(
+        self,
+        chunks: AsyncIterator[bytes],
+        *,
+        lazy: bool = False,
+        server_tz: str | None = None,
+        binary_columns: Collection[str] | str | None = None,
+    ):
         self._chunks = chunks.__aiter__()
         self._reader = _StreamingReader()
         self._done = False
@@ -1845,6 +2008,7 @@ class RowBinaryWithNamesAndTypesStreamParser:
         self._batch: _BatchDecoder | None = None
         self._lazy = lazy
         self._server_tz = server_tz
+        self._binary_columns = binary_columns
 
     async def _fill(self) -> bool:
         try:
@@ -1867,13 +2031,14 @@ class RowBinaryWithNamesAndTypesStreamParser:
                 types = [self._reader.read_string() for _ in range(column_count)]
                 self._names = names
                 self._types = types
-                self._readers = [_reader_for_type(tp, self._server_tz) for tp in types]
+                decoded = decode_types(names, types, self._binary_columns)
+                self._readers = [_reader_for_type(tp, self._server_tz) for tp in decoded]
                 if self._lazy:
-                    self._row_template = _lazy_row_template(types)
-                    self._skippers = None if self._row_template else [_skipper_for_type(tp) for tp in types]
+                    self._row_template = _lazy_row_template(decoded)
+                    self._skippers = None if self._row_template else [_skipper_for_type(tp) for tp in decoded]
                 else:
                     self._skippers = None
-                    self._batch = _batch_decoder(types, self._server_tz)
+                    self._batch = _batch_decoder(decoded, self._server_tz)
             except _NeedMoreData:
                 self._reader.pos = checkpoint
                 if not await self._fill():
@@ -1904,7 +2069,7 @@ class RowBinaryWithNamesAndTypesStreamParser:
     async def rows(self) -> AsyncIterator[list[Any] | RowBinaryLazyValues]:  # noqa: C901, PLR0912
         # Both loops stay here: delegating between async generators costs a frame per row,
         # measured at 8% on a String column and worse on the bulk path.
-        await self.read_header()
+        names, types = await self.read_header()
         assert self._readers is not None
 
         if self._batch is not None:
@@ -1913,7 +2078,10 @@ class RowBinaryWithNamesAndTypesStreamParser:
 
             while True:
                 # Whole rows go in one pass; a partial trailing row waits for the next chunk.
-                batch, pos = decode_batch(reader.buffer, reader.pos, len(reader.buffer))
+                try:
+                    batch, pos = decode_batch(reader.buffer, reader.pos, len(reader.buffer))
+                except UnicodeDecodeError as error:
+                    raise _utf8_error(names, types, error) from error
                 if batch:
                     reader.pos = pos
                     reader.compact()
@@ -1937,6 +2105,8 @@ class RowBinaryWithNamesAndTypesStreamParser:
                     yield [read(self._reader) for read in self._readers]
 
                 self._reader.compact()
+            except UnicodeDecodeError as error:
+                raise _utf8_error(names, types, error) from error
             except _NeedMoreData:
                 self._reader.pos = checkpoint
                 if not await self._fill():

@@ -24,6 +24,7 @@
   - [Query Settings](#query-settings)
   - [External Tables](#external-tables)
   - [JSON Type](#json-type)
+  - [Binary Columns](#binary-columns)
   - [Error Handling](#error-handling)
   - [Custom Session](#custom-session)
   - [Enable Compression](#enable-compression)
@@ -344,6 +345,36 @@ row = await client.fetchone("SELECT id, doc FROM json_demo WHERE id = 1")
 print(row["doc"])  # Output: {"a": 1, "b": [True, None, {"c": "x"}]}
 ```
 
+### Binary Columns
+
+A ClickHouse `String` is any sequence of bytes, not necessarily UTF-8. Columns decode to `str`;
+name the binary ones and they come back as `bytes`:
+
+```python
+row = await client.fetchone(
+    "SELECT id, payload, sha FROM blobs LIMIT 1",
+    binary_columns=["payload", "sha"],  # or binary_columns="payload"
+)
+print(row["payload"])  # Output: b'\x00\xff\xfe\x01'
+```
+
+- Applies at every level of nesting: `Array(String)` gives `list[bytes]`, `Map(String, String)`
+  gives `dict[bytes, bytes]`.
+- `FixedString(N)` keeps its null padding, which `str` strips.
+- Available on `fetch`, `fetch_rows`, `fetchone`, `fetchval`, `stream` and `stream_rows`.
+  `fetch_format` / `stream_format` return the payload undecoded, so there it raises `ChArgumentError`.
+- Reading a non-UTF-8 column without it raises `ChProtocolError` listing the columns to name.
+
+Inserts are sent as JSON, which cannot carry arbitrary bytes. Pass them as hex and decode
+server-side:
+
+```python
+await client.execute(
+    "INSERT INTO blobs SELECT {id:UInt32}, unhex({payload:String})",
+    params={"id": 1, "payload": payload.hex()},
+)
+```
+
 ### Error Handling
 
 Transport, server and decoding failures all derive from `ChClientError`, so one handler still
@@ -365,6 +396,7 @@ Catch a subclass when different failures need different handling:
 | `ChTransportError` | The request got no usable answer: refused connection, timeout, truncated response |
 | `ChServerError` | ClickHouse reported an error, in the status or inside a `200 OK` body |
 | `ChProtocolError` | The response arrived but could not be decoded in the requested format |
+| `ChArgumentError` | A query option does not fit the query, e.g. `binary_columns` naming a column it did not select. Also a `ValueError` |
 
 `ChServerError` carries `status`, `code`, `query_id` and `exception_tag`:
 
@@ -419,8 +451,8 @@ aiochlite uses ClickHouse’s `RowBinaryWithNamesAndTypes` for result decoding:
 | `Decimal(P, S)` | `Decimal` | Precision preserved |
 | `Decimal32(S)`, `Decimal64(S)`, `Decimal128(S)`, `Decimal256(S)` | `Decimal` | Precision preserved |
 | **String** | | |
-| `String` | `str` | |
-| `FixedString(N)` | `str` | Null padding stripped |
+| `String` | `str` | `bytes` via [`binary_columns`](#binary-columns) |
+| `FixedString(N)` | `str` | Null padding stripped; `bytes` via [`binary_columns`](#binary-columns) |
 | **Date/Time** | | |
 | `Date` | `date` | |
 | `Date32` | `date` | |

@@ -6,10 +6,11 @@ __copyright__ = f"Copyright (c) 2026 {__author__}"
 
 from .client import AsyncChClient, ExportFormat
 from .core import ExternalTable, InsertData, InsertRow, Row
-from .exceptions import ChClientError, ChProtocolError, ChServerError, ChTransportError
+from .exceptions import ChArgumentError, ChClientError, ChProtocolError, ChServerError, ChTransportError
 
 __all__ = (
     "AsyncChClient",
+    "ChArgumentError",
     "ChClientError",
     "ChProtocolError",
     "ChServerError",

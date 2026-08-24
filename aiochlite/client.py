@@ -1,8 +1,8 @@
 import re
 import warnings
-from collections.abc import AsyncGenerator, AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator, Collection
 from contextlib import aclosing, contextmanager, suppress
-from typing import Any, Generator, Literal, Mapping, Self, Sequence, TypedDict, Unpack
+from typing import Any, Generator, Literal, Mapping, Self, Sequence, TypedDict, Unpack, cast
 
 from aiohttp import ClientSession, FormData, TCPConnector
 
@@ -23,7 +23,7 @@ from .core import (
     serialize_rows,
     take_first_row,
 )
-from .exceptions import ChClientError, ChProtocolError
+from .exceptions import ChArgumentError, ChClientError, ChProtocolError
 from .http_client import HttpClient
 
 _COMMENT_OR_LITERAL_RE = re.compile(
@@ -34,6 +34,9 @@ _COMMENT_OR_LITERAL_RE = re.compile(
     r"|/\*.*?\*/",  # block comment
     re.DOTALL,
 )
+
+# The format the row-returning calls ask for and decode themselves.
+_ROW_FORMAT = "RowBinaryWithNamesAndTypes"
 
 _FORMAT_CLAUSE_RE = re.compile(
     r"\bformat\s+[a-z0-9_]+\s*(?:\bsettings\b.*)?;?\s*$",
@@ -103,6 +106,15 @@ def _decoding() -> Generator[None, None, None]:
     """A payload that fails to decode is a bad response, not a bad call."""
     try:
         yield
+    except ChArgumentError:
+        # The one bad call raised from in here, and a `ValueError` like the rest of them.
+        raise
+    except UnicodeDecodeError as error:
+        # A fallback: the parsers name the columns themselves where they know them.
+        raise ChProtocolError(
+            f"A String/FixedString column holds bytes that are not UTF-8: {error}."
+            " Pass binary_columns={'<column>'} to read it as bytes."
+        ) from error
     except ValueError as error:
         raise ChProtocolError(str(error)) from error
 
@@ -121,12 +133,27 @@ def _warn_deprecated(old: str, new: str):
     )
 
 
-class QueryOptions(TypedDict, total=False):
-    """Options for ClickHouse query execution."""
+class _RequestOptions(TypedDict, total=False):
+    """The options that shape the request itself, as `build_query_params` takes them."""
 
     params: Mapping[str, Any] | None
     settings: Mapping[str, Any] | None
     external_tables: dict[str, ExternalTable] | None
+
+
+class QueryOptions(_RequestOptions, total=False):
+    """Options for ClickHouse query execution.
+
+    Attributes:
+        params (Mapping[str, Any] | None): Query parameters, bound as `{name:Type}`.
+        settings (Mapping[str, Any] | None): ClickHouse settings for this query.
+        external_tables (dict[str, ExternalTable] | None): Tables sent with the query.
+        binary_columns (Collection[str] | str | None): Columns to decode as `bytes` instead of
+            `str`, or one column name. Covers every `String`/`FixedString` in the column's type,
+            however deeply nested.
+    """
+
+    binary_columns: Collection[str] | str | None
 
 
 class AsyncChClient:
@@ -213,7 +240,7 @@ class AsyncChClient:
         self,
         query: str,
         *,
-        format_name: str | None = "RowBinaryWithNamesAndTypes",
+        format_name: str | None = _ROW_FORMAT,
         **kwargs: Unpack[QueryOptions],
     ) -> tuple[dict[str, Any], str | FormData]:
         """Prepare query for execution by adding FORMAT clause (when needed) and building params."""
@@ -223,7 +250,15 @@ class AsyncChClient:
 
             query = f"{query} FORMAT {format_name}"
 
-        params = self._core.build_query_params(**kwargs)
+        # The other calls hand back the payload as the server wrote it: nothing to decode, so the
+        # option would be silently dropped.
+        if kwargs.get("binary_columns") and format_name != _ROW_FORMAT:
+            raise ChArgumentError("binary_columns applies only to the calls that decode rows.")
+
+        # Unpacked, so a misspelled option is still a TypeError.
+        query_options = kwargs.copy()
+        query_options.pop("binary_columns", None)
+        params = self._core.build_query_params(**cast("_RequestOptions", query_options))
 
         data: str | FormData
         if external_tables := kwargs.get("external_tables"):
@@ -242,12 +277,18 @@ class AsyncChClient:
 
         return params, data
 
-    async def _stream(self, params: dict[str, Any], data: str | FormData) -> AsyncGenerator[Row, None]:
+    async def _stream(
+        self,
+        params: dict[str, Any],
+        data: str | FormData,
+        binary_columns: Collection[str] | str | None = None,
+    ) -> AsyncGenerator[Row, None]:
         async with self._http_client.stream(self._url, params=params, data=data) as (tz, byte_chunks):
             parser = RowBinaryWithNamesAndTypesStreamParser(
                 byte_chunks,
                 lazy=self._lazy_decode,
                 server_tz=tz,
+                binary_columns=binary_columns,
             )
             with _decoding():
                 names, _ = await parser.read_header()
@@ -256,14 +297,19 @@ class AsyncChClient:
                 async for values in parser.rows():
                     yield Row(names, values, index)
 
-    async def _fetch(self, params: dict[str, Any], data: str | FormData) -> list[Row]:
+    async def _fetch(
+        self,
+        params: dict[str, Any],
+        data: str | FormData,
+        binary_columns: Collection[str] | str | None = None,
+    ) -> list[Row]:
         payload, tz = await self._http_client.read(self._url, params=params, data=data)
         server_tz = tz
         with _decoding():
             names, _, rows = (
-                parse_rowbinary_with_names_and_types_lazy(payload, server_tz)
+                parse_rowbinary_with_names_and_types_lazy(payload, server_tz, binary_columns=binary_columns)
                 if self._lazy_decode
-                else parse_rowbinary_with_names_and_types(payload, server_tz)
+                else parse_rowbinary_with_names_and_types(payload, server_tz, binary_columns=binary_columns)
             )
 
             index = {name: idx for idx, name in enumerate(names)}
@@ -291,7 +337,7 @@ class AsyncChClient:
             ChClientError: If query execution fails.
         """
         params, data = self._prepare_query(query, **kwargs)
-        async with aclosing(self._stream(params, data)) as rows:
+        async with aclosing(self._stream(params, data, kwargs.get("binary_columns"))) as rows:
             async for row in rows:
                 yield row
 
@@ -309,7 +355,12 @@ class AsyncChClient:
         """
         params, data = self._prepare_query(query, **kwargs)
         async with self._http_client.stream(self._url, params=params, data=data) as (tz, byte_chunks):
-            parser = RowBinaryWithNamesAndTypesStreamParser(byte_chunks, lazy=False, server_tz=tz)
+            parser = RowBinaryWithNamesAndTypesStreamParser(
+                byte_chunks,
+                lazy=False,
+                server_tz=tz,
+                binary_columns=kwargs.get("binary_columns"),
+            )
             with _decoding():
                 await parser.read_header()
 
@@ -326,7 +377,7 @@ class AsyncChClient:
             ChClientError: If query execution fails.
         """
         params, data = self._prepare_query(query, **kwargs)
-        return await self._fetch(params, data)
+        return await self._fetch(params, data, kwargs.get("binary_columns"))
 
     async def fetch_rows(self, query: str, **kwargs: Unpack[QueryOptions]) -> list[tuple[Any, ...]]:
         """Execute query and fetch all results as raw tuples (no `Row` wrapper).
@@ -340,7 +391,12 @@ class AsyncChClient:
         params, data = self._prepare_query(query, **kwargs)
         payload, tz = await self._http_client.read(self._url, params=params, data=data)
         with _decoding():
-            _, _, rows = parse_rowbinary_with_names_and_types(payload, tz, as_tuple=True)
+            _, _, rows = parse_rowbinary_with_names_and_types(
+                payload,
+                tz,
+                as_tuple=True,
+                binary_columns=kwargs.get("binary_columns"),
+            )
             return list(rows)
 
     async def fetchone(self, query: str, **kwargs: Unpack[QueryOptions]) -> Row | None:

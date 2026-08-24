@@ -25,6 +25,16 @@ class ChProtocolError(ChClientError):
     """The server answered, but the payload could not be decoded in the requested format."""
 
 
+class ChArgumentError(ChClientError, ValueError):
+    """
+    A query option that does not fit the query, such as ``binary_columns`` naming a column
+    the query did not select.
+
+    A ``ValueError`` like any other bad argument, and a ``ChClientError`` like every other
+    failure of a call.
+    """
+
+
 class ChServerError(ChClientError):
     """
     Error reported by ClickHouse, either in the HTTP status or inside a ``200 OK`` body.

@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- `binary_columns` on every row-returning call names the columns to decode as `bytes` instead of
+  `str`. A ClickHouse `String` is any sequence of bytes, and until now a column holding binary data
+  could not be read at all. It covers every `String`/`FixedString` in the column's type, however
+  deeply nested, and costs nothing when unused: the column type is rewritten once per query and
+  the decoders stay keyed by type string.
+- `ChArgumentError`, raised when a query option does not fit the query — `binary_columns` naming a
+  column the query did not select, one holding no text, or any call that decodes no rows. It is
+  both a `ChClientError` and a `ValueError`.
+
+### Fixed
+- **A `FixedString` holding bytes that are not UTF-8 was silently corrupted**: it decoded with
+  `errors="replace"`, so invalid sequences came back as `U+FFFD` with nothing to tell the value
+  apart from text. It now decodes strictly, as `String` always has, and raises `ChProtocolError`.
+  Read such a column through `binary_columns`.
+
+### Changed
+- A failed UTF-8 decode no longer reports a bare codec error. The message says the column is not
+  UTF-8 and names the columns `binary_columns` can be passed for.
+
 ## 1.7.1 (2026-08-18)
 
 ### Changed
