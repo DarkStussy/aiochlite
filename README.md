@@ -491,6 +491,7 @@ When sending data to ClickHouse (query parameters and inserts), Python types are
 - `date` → `YYYY-MM-DD`
 - `timedelta` → `HH:MM:SS[.ffffff]` (signed; suitable for `Time` / `Time64`)
 - `UUID` / `Decimal` → string representation
+- `enum.Enum` → its value, itself converted by these rules
 - `list` → array literal (e.g. `[1,2,3]`)
 - `tuple` → tuple literal (e.g. `(1,2,3)`)
 - `dict` → map literal (e.g. `{'k':'v'}`)

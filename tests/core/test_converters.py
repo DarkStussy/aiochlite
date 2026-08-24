@@ -1,6 +1,7 @@
 import json
 from datetime import UTC, date, datetime, timedelta, tzinfo
 from decimal import Decimal
+from enum import Enum, IntEnum, IntFlag, StrEnum
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -262,6 +263,56 @@ class TestToJson:
         result = to_json(data)
         parsed = json.loads(result)
         assert parsed == [[1, 2], [3, 4], [5, 6]]
+
+
+class Color(Enum):
+    RED = "red"
+    QUOTE = "it's"
+
+
+class Level(IntEnum):
+    HIGH = 2
+
+
+class Style(StrEnum):
+    BOLD = "bold"
+
+
+class Perm(IntFlag):
+    READ = 4
+
+
+class When(Enum):
+    LAUNCH = datetime(2025, 12, 14, 10, 0, 0)
+
+
+class TestEnumMembers:
+    """An Enum member stands for its value: `str()` on one renders `Color.RED`."""
+
+    def test_a_parameter_takes_the_value(self):
+        assert to_clickhouse(Color.RED) == "red"
+        assert to_clickhouse(Level.HIGH) == 2
+        assert to_clickhouse(Style.BOLD) == "bold"
+        assert to_clickhouse(Perm.READ) == 4
+
+    def test_a_value_needing_conversion_still_gets_it(self):
+        assert to_clickhouse(When.LAUNCH) == "2025-12-14 10:00:00"
+
+    def test_a_member_in_a_container_is_a_literal_of_its_value(self):
+        assert to_clickhouse([Color.RED, Level.HIGH]) == "['red',2]"
+        assert to_clickhouse((Color.RED,)) == "('red')"
+        assert to_clickhouse({"k": Color.RED}) == "{'k':'red'}"
+
+    def test_a_member_used_as_a_map_key_takes_its_value(self):
+        assert to_clickhouse({Color.RED: 1}) == "{'red':1}"
+
+    def test_a_value_holding_a_quote_is_still_escaped(self):
+        assert to_clickhouse([Color.QUOTE]) == "['it\\'s']"
+
+    def test_json_encodes_the_value(self):
+        parsed = json.loads(to_json({"a": Color.RED, "b": Level.HIGH, "c": Style.BOLD, "d": When.LAUNCH}))
+
+        assert parsed == {"a": "red", "b": 2, "c": "bold", "d": "2025-12-14 10:00:00"}
 
 
 class TestQuoteIdentifier:

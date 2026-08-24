@@ -1,5 +1,6 @@
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from enum import Enum
 from typing import Any
 from uuid import UUID
 
@@ -106,13 +107,20 @@ def _scalar_clickhouse_literal(value: Any) -> str | _MissingType:
     return out
 
 
+def _enum_value(value: Any) -> Any:
+    """An `Enum` member stands for its value; `str()` on one renders `Color.RED`."""
+    return value.value if isinstance(value, Enum) else value
+
+
 def _container_clickhouse_literal(value: Any) -> str | _MissingType:
     if isinstance(value, tuple):
         return f"({','.join(_to_clickhouse_literal(item) for item in value)})"
     if isinstance(value, list):
         return f"[{','.join(_to_clickhouse_literal(item) for item in value)}]"
     if isinstance(value, dict):
-        items = ",".join(f"{_to_clickhouse_literal(str(k))}:{_to_clickhouse_literal(v)}" for k, v in value.items())
+        items = ",".join(
+            f"{_to_clickhouse_literal(str(_enum_value(k)))}:{_to_clickhouse_literal(v)}" for k, v in value.items()
+        )
         return f"{{{items}}}"
 
     return _MISSING
@@ -120,6 +128,7 @@ def _container_clickhouse_literal(value: Any) -> str | _MissingType:
 
 def _to_clickhouse_literal(value: Any) -> str:
     """Render Python value as a ClickHouse literal (used for container params)."""
+    value = _enum_value(value)
     scalar = _scalar_clickhouse_literal(value)
     if not isinstance(scalar, _MissingType):
         return scalar
@@ -141,6 +150,7 @@ def to_clickhouse(value: Any) -> str | int | float:
     Returns:
         str | int | float: Converted value suitable for ClickHouse.
     """
+    value = _enum_value(value)
     if value is None:
         out: str | int | float = "\\N"
     else:

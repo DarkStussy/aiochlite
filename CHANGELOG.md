@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- **An `enum.Enum` member sent as a parameter or inserted arrived as `Color.RED`, not `red`** — the
+  only conversion that reached the server wrong rather than raising. It fell through to `str()`,
+  which renders a member, not its value. A member now stands for its value everywhere: parameters,
+  array, tuple and map literals, map keys, and inserts. A value that needs converting in its own
+  right, such as a `datetime`, still gets it. `IntEnum` and `StrEnum` happened to work already,
+  since `str()` on those is `int.__str__` and `str.__str__`.
+
 ## 1.8.0 (2026-08-25)
 
 ### Added
