@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.8.0 (2026-08-25)
 
 ### Added
 - `binary_columns` on every row-returning call names the columns to decode as `bytes` instead of
