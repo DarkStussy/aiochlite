@@ -21,7 +21,7 @@ def _to_json_compact_each_row_bytes(external_table: ExternalTable) -> bytes:
         rows = _transform_to_json_compact_each_row([s[0] for s in external_table.structure], rows)
 
     data = "\n".join(to_json(list(r)) for r in rows) + "\n"
-    return data.encode("utf-8")
+    return data.encode("utf-8", "surrogateescape")
 
 
 def build_external_data(external_tables: dict[str, ExternalTable]) -> list[ExternalData]:

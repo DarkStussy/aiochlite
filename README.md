@@ -283,7 +283,7 @@ result = await client.fetch(
 - Basic: `int`, `float`, `str`, `bool`, `None`
 - Collections: `list`, `tuple`, `dict`
 - Date/Time: `datetime`, `date`, `timedelta`
-- Special: `UUID`, `Decimal`, `bytes`
+- Special: `UUID`, `Decimal`, `bytes`, `enum.Enum`
 
 Microseconds are kept, so a `DateTime` column rejects a value that has them — use `DateTime64`
 or `.replace(microsecond=0)`.
@@ -365,13 +365,15 @@ print(row["payload"])  # Output: b'\x00\xff\xfe\x01'
   `fetch_format` / `stream_format` return the payload undecoded, so there it raises `ChArgumentError`.
 - Reading a non-UTF-8 column without it raises `ChProtocolError` listing the columns to name.
 
-Inserts are sent as JSON, which cannot carry arbitrary bytes. Pass them as hex and decode
-server-side:
+Writing works the same way: pass `bytes` to an insert or a query parameter and they arrive as they
+are, UTF-8 or not.
 
 ```python
-await client.execute(
-    "INSERT INTO blobs SELECT {id:UInt32}, unhex({payload:String})",
-    params={"id": 1, "payload": payload.hex()},
+await client.insert("blobs", [{"id": 1, "payload": b"\x00\xff\xfe\x01"}])
+
+found = await client.fetchval(
+    "SELECT count() FROM blobs WHERE payload = {p:String}",
+    params={"p": b"\x00\xff\xfe\x01"},
 )
 ```
 
@@ -495,7 +497,7 @@ When sending data to ClickHouse (query parameters and inserts), Python types are
 - `list` → array literal (e.g. `[1,2,3]`)
 - `tuple` → tuple literal (e.g. `(1,2,3)`)
 - `dict` → map literal (e.g. `{'k':'v'}`)
-- `bytes` → UTF-8 decoded string
+- `bytes` → the bytes themselves, whether or not they are UTF-8
 - `None` → `NULL`
 - `bool` → `1`/`0` for query parameters, `true`/`false` inside container literals
 

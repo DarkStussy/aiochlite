@@ -80,6 +80,17 @@ def _escape_ch_string_literal(value: str) -> str:
     )
 
 
+# Plain ASCII stands for itself; everything else travels as `\xNN`.
+_ESCAPED_BYTES: tuple[str, ...] = tuple(
+    chr(byte) if 0x20 <= byte < 0x7F and byte not in (0x5C, 0x27) else f"\\x{byte:02x}" for byte in range(256)
+)
+
+
+def _escape_ch_bytes(raw: bytes) -> str:
+    """Bytes as escaped-format text, the only way a parameter carries what is not UTF-8."""
+    return "".join([_ESCAPED_BYTES[byte] for byte in raw])
+
+
 def _scalar_clickhouse_literal(value: Any) -> str | _MissingType:
     if value is None:
         out: str | _MissingType = "NULL"
@@ -100,7 +111,7 @@ def _scalar_clickhouse_literal(value: Any) -> str | _MissingType:
         elif isinstance(value, (UUID, Decimal)):
             out = f"'{value}'"
         elif isinstance(value, bytes):
-            out = f"'{_escape_ch_string_literal(value.decode('utf-8'))}'"
+            out = f"'{_escape_ch_bytes(value)}'"
         else:
             out = _MISSING
 
@@ -140,6 +151,22 @@ def _to_clickhouse_literal(value: Any) -> str:
     return f"'{_escape_ch_string_literal(str(value))}'"
 
 
+def _parameter_text(value: Any) -> str:
+    """A parameter that is neither a number, a plain string nor a container."""
+    if isinstance(value, datetime):
+        return format_datetime(value)
+    if isinstance(value, date):
+        return value.strftime("%Y-%m-%d")
+    if isinstance(value, timedelta):
+        return format_timedelta(value)
+    if isinstance(value, (UUID, Decimal)):
+        return str(value)
+    if isinstance(value, bytes):
+        return _escape_ch_bytes(value)
+
+    return _escape_ch_string_literal(str(value))
+
+
 def to_clickhouse(value: Any) -> str | int | float:
     """
     Convert Python value to ClickHouse parameter format.
@@ -152,26 +179,20 @@ def to_clickhouse(value: Any) -> str | int | float:
     """
     value = _enum_value(value)
     if value is None:
+        # Already the escaped-format null.
         out: str | int | float = "\\N"
     else:
         value_type = type(value)
         if value_type is bool:
             out = 1 if value else 0
-        elif value_type is int or value_type is float or value_type is str:
+        elif value_type is int or value_type is float:
             out = value
+        elif value_type is str:
+            out = _escape_ch_string_literal(value)
         elif isinstance(value, (list, tuple, dict)):
+            # Its strings are escaped already, and the server unescapes once.
             out = _to_clickhouse_literal(value)
-        elif isinstance(value, datetime):
-            out = format_datetime(value)
-        elif isinstance(value, date):
-            out = value.strftime("%Y-%m-%d")
-        elif isinstance(value, timedelta):
-            out = format_timedelta(value)
-        elif isinstance(value, (UUID, Decimal)):
-            out = str(value)
-        elif isinstance(value, bytes):
-            out = value.decode("utf-8")
         else:
-            out = str(value)
+            out = _parameter_text(value)
 
     return out

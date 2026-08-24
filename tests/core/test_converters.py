@@ -288,6 +288,67 @@ class When(Enum):
     LAUNCH = datetime(2025, 12, 14, 10, 0, 0)
 
 
+class TestParameterEscaping:
+    """A parameter is read back from the escaped format, so the value has to arrive escaped."""
+
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            ("plain", "plain"),
+            ("C:\\new\\table", "C:\\\\new\\\\table"),
+            ("a\nb", "a\\nb"),
+            ("a\tb", "a\\tb"),
+            ("a\rb", "a\\rb"),
+            ("nul\0here", "nul\\0here"),
+            ("quote'here", "quote\\'here"),
+            ("\u043f\u0440\u0438\u0432\u0435\u0442", "\u043f\u0440\u0438\u0432\u0435\u0442"),
+        ],
+    )
+    def test_a_string_parameter_is_escaped(self, value: str, expected: str):
+        assert to_clickhouse(value) == expected
+
+    def test_null_is_left_as_the_escaped_format_null(self):
+        """`\\N` is the escaped form already; escaping it again would send a literal backslash."""
+        assert to_clickhouse(None) == "\\N"
+
+    def test_numbers_and_dates_are_untouched(self):
+        assert to_clickhouse(42) == 42
+        assert to_clickhouse(1.5) == 1.5
+        assert to_clickhouse(value=True) == 1
+        assert to_clickhouse(date(2025, 12, 14)) == "2025-12-14"
+
+    def test_a_container_is_not_escaped_twice(self):
+        """Its strings are escaped as literals, and the server unescapes only once."""
+        assert to_clickhouse(["a\\b"]) == "['a\\\\b']"
+        assert to_clickhouse(["a\nb"]) == "['a\\nb']"
+
+
+class TestBytesParameters:
+    """A ClickHouse String is any byte sequence; `\\xNN` is how one that is not UTF-8 travels."""
+
+    def test_plain_ascii_stands_for_itself(self):
+        assert to_clickhouse(b"hello") == "hello"
+
+    def test_bytes_outside_ascii_become_hex_escapes(self):
+        assert to_clickhouse(b"\x00\xff\xfe\x01") == "\\x00\\xff\\xfe\\x01"
+
+    def test_a_backslash_and_a_quote_are_escaped_too(self):
+        assert to_clickhouse(b"a'b\\c") == "a\\x27b\\x5cc"
+
+    def test_utf8_bytes_survive_as_their_own_encoding(self):
+        assert to_clickhouse("\u043f\u0440\u0438".encode()) == "\\xd0\\xbf\\xd1\\x80\\xd0\\xb8"
+
+    def test_every_byte_value_is_representable(self):
+        """The point of the escape: nothing in 0..255 may be lost or rejected."""
+        rendered = to_clickhouse(bytes(range(256)))
+
+        assert isinstance(rendered, str)
+        assert rendered.isascii()
+
+    def test_bytes_in_a_container_are_escaped_inside_the_quotes(self):
+        assert to_clickhouse([b"\xff", b"ok"]) == "['\\xff','ok']"
+
+
 class TestEnumMembers:
     """An Enum member stands for its value: `str()` on one renders `Color.RED`."""
 

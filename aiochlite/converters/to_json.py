@@ -18,7 +18,8 @@ def _json_default(value: Any) -> Any:
     if isinstance(value, (UUID, Decimal)):
         return str(value)
     if isinstance(value, bytes):
-        return value.decode("utf-8")
+        # The surrogates become those bytes again when the body is encoded.
+        return value.decode("utf-8", "surrogateescape")
     return str(value)
 
 

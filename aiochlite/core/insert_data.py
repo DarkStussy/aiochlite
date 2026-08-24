@@ -74,7 +74,7 @@ async def build_insert_body(statement: str, rows: Iterable[str] | AsyncIterable[
         if isinstance(rows, AsyncIterable):
             async for row in rows:
                 # Encoded upfront: the threshold is in bytes, and one character is not one byte.
-                encoded = row.encode()
+                encoded = row.encode("utf-8", "surrogateescape")
                 batch.append(encoded)
                 size += len(encoded) + 1
                 if size >= _BATCH_BYTES:
@@ -83,7 +83,7 @@ async def build_insert_body(statement: str, rows: Iterable[str] | AsyncIterable[
                     size = 0
         else:
             for row in rows:
-                encoded = row.encode()
+                encoded = row.encode("utf-8", "surrogateescape")
                 batch.append(encoded)
                 size += len(encoded) + 1
                 if size >= _BATCH_BYTES:

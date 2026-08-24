@@ -2,7 +2,21 @@
 
 ## Unreleased
 
+### Added
+- `bytes` can be sent, not just read. A ClickHouse `String` is any byte sequence, and until now
+  only `binary_columns` covered the reading half. A `bytes` parameter travels as `\xNN`, and an
+  insert carries the bytes themselves, so every value in `0..255` reaches the server intact —
+  in a container, an external table and a `Map` value alike.
+
 ### Fixed
+- **A string parameter holding a backslash arrived mangled**, and one holding a tab or a newline
+  was rejected with `Code: 457`. The server reads a parameter back from the [escaped
+  format](https://clickhouse.com/docs/concepts/features/interfaces/http#tabs-in-url-parameters),
+  which aiochlite did not write: `C:\new\table` reached it as `C:`, a newline, `ew`, a tab and
+  `able`, and `\x41` as `A`. Windows paths, regular expressions and JSON in a parameter were all
+  corrupted silently. Parameters are now escaped, and `\N` for `None` stays what it already was.
+  Values inside an array, tuple or map literal were never affected — those carry their own
+  escaping, which the server unescapes exactly once.
 - **An `enum.Enum` member sent as a parameter or inserted arrived as `Color.RED`, not `red`** — the
   only conversion that reached the server wrong rather than raising. It fell through to `str()`,
   which renders a member, not its value. A member now stands for its value everywhere: parameters,

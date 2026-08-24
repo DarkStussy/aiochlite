@@ -191,3 +191,28 @@ async def test_serialize_rows_renders_such_a_key_in_a_tuple_row():
     assert format_name == "JSONCompactEachRow"
     assert isinstance(rows, Iterable)
     assert list(rows) == ['[{"red":1},"red"]']
+
+
+async def test_insert_body_carries_bytes_that_are_not_utf8():
+    """A ClickHouse String is any byte sequence, and its JSON reader takes the bytes verbatim."""
+    blob = bytes(range(256))
+    taken = await take_first_row([{"v": blob}])
+    assert taken is not None
+
+    _format_name, rows = serialize_rows(*taken)
+    assert isinstance(rows, Iterable)
+    chunks = [chunk async for chunk in build_insert_body("INSERT\n", rows)]
+
+    assert b"".join(chunks).startswith(b"INSERT\n")
+    assert blob[128:] in b"".join(chunks)
+
+
+async def test_a_row_of_plain_text_still_encodes_as_utf8():
+    taken = await take_first_row([{"v": "привет"}])
+    assert taken is not None
+
+    _format_name, rows = serialize_rows(*taken)
+    assert isinstance(rows, Iterable)
+    chunks = [chunk async for chunk in build_insert_body("INSERT\n", rows)]
+
+    assert "привет".encode() in b"".join(chunks)

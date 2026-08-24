@@ -182,3 +182,40 @@ async def test_datetime_param_with_microseconds_is_rejected(ch_client: AsyncChCl
 async def test_settings_cannot_override_query_params(ch_client: AsyncChClient):
     value = await ch_client.fetchval("SELECT {x:UInt8}", params={"x": 1}, settings={"param_x": 9})
     assert value == 1
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "plain",
+        "C:\\new\\table",
+        "a\nb",
+        "a\tb",
+        "a\rb",
+        "\\x41",
+        "quote'here",
+        "nul\0here",
+        "привет",
+        '{"json":"string"}',
+        "",
+    ],
+)
+async def test_a_string_parameter_survives_the_escaped_format(ch_client: AsyncChClient, value: str):
+    """The server reads a parameter back from the escaped format, unescaping what it is given."""
+    assert await ch_client.fetchval("SELECT {v:String}", params={"v": value}) == value
+
+
+@pytest.mark.parametrize(
+    "value",
+    [b"", b"hello", b"\x00\xff\xfe\x01", bytes(range(256)), "текст".encode(), b"a'b\\c"],
+)
+async def test_a_bytes_parameter_survives_every_byte(ch_client: AsyncChClient, value: bytes):
+    assert await ch_client.fetchval("SELECT {v:String} AS v", params={"v": value}, binary_columns={"v"}) == value
+
+
+async def test_bytes_inside_a_container_parameter(ch_client: AsyncChClient):
+    got = await ch_client.fetchval(
+        "SELECT {v:Array(String)} AS v", params={"v": [b"\xff\x00", b"ok"]}, binary_columns={"v"}
+    )
+
+    assert got == [b"\xff\x00", b"ok"]
