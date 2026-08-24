@@ -11,8 +11,26 @@
 - `ChArgumentError`, raised when a query option does not fit the query — `binary_columns` naming a
   column the query did not select, one holding no text, or any call that decodes no rows. It is
   both a `ChClientError` and a `ValueError`.
+- `Int128`, `UInt128`, `Int256` and `UInt256` decode to `int`. They are wider than any `struct`
+  code, so they travel as raw bytes and are widened by their converter, as the big decimals do.
+- `SimpleAggregateFunction(func, T)` decodes as `T`, which is what it encodes on the wire. It is an
+  ordinary column type in an `AggregatingMergeTree`, and is stripped like `LowCardinality` — ahead
+  of the `Nullable` check, since `T` may itself be `Nullable`.
+- `Nothing` decodes to `None`, which is what makes `SELECT NULL` work: a bare `NULL` types as
+  `Nullable(Nothing)`, where the null flag is the whole value and `Nothing` occupies no bytes.
+  Until now it raised `Unsupported RowBinary type: Nothing`.
 
 ### Fixed
+- **A named `Tuple` raised `Unsupported RowBinary type: a UInt8`.** `Tuple(a UInt8, b String)`
+  carries field names in its type string but not on the wire, so they are dropped and a named tuple
+  decodes to a `tuple` like any other — nested in an `Array` or `Map` too. The type-argument scanner
+  now tracks backquotes and backslash escapes as well, so a field name or enum label holding a comma
+  no longer splits the type in the wrong place.
+- **Lazy decoding read every column after a `Map(K, LowCardinality(Nullable(V)))` from the wrong
+  offset** — silently wrong on a single row, `ChProtocolError` on several. Both halves looked
+  fixed-width, so the map was skipped as one block and the per-element null flags were never counted.
+  The skippers now measure width through the same check the row layout uses, which rejects a
+  `Nullable` behind any wrapper.
 - **A `FixedString` holding bytes that are not UTF-8 was silently corrupted**: it decoded with
   `errors="replace"`, so invalid sequences came back as `U+FFFD` with nothing to tell the value
   apart from text. It now decodes strictly, as `String` always has, and raises `ChProtocolError`.
@@ -21,6 +39,9 @@
 ### Changed
 - A failed UTF-8 decode no longer reports a bare codec error. The message says the column is not
   UTF-8 and names the columns `binary_columns` can be passed for.
+- Lazy decoding skips more containers with one multiply instead of walking them element by element:
+  an `Array(FixedString(N))`, a `Map` with `FixedString`, `Decimal`, `DateTime64` or `Time64` on
+  either side, and a `Map(UUID, UUID)`.
 
 ## 1.7.1 (2026-08-18)
 

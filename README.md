@@ -447,6 +447,7 @@ aiochlite uses ClickHouse’s `RowBinaryWithNamesAndTypes` for result decoding:
 | **Numeric** | | |
 | `UInt8`, `UInt16`, `UInt32`, `UInt64` | `int` | |
 | `Int8`, `Int16`, `Int32`, `Int64` | `int` | |
+| `UInt128`, `UInt256`, `Int128`, `Int256` | `int` | |
 | `Float32`, `Float64` | `float` | |
 | `Decimal(P, S)` | `Decimal` | Precision preserved |
 | `Decimal32(S)`, `Decimal64(S)`, `Decimal128(S)`, `Decimal256(S)` | `Decimal` | Precision preserved |
@@ -468,13 +469,19 @@ aiochlite uses ClickHouse’s `RowBinaryWithNamesAndTypes` for result decoding:
 | `Bool` | `bool` | |
 | **Composite** | | |
 | `Array(T)` | `list` | Elements converted recursively |
-| `Tuple(T1, T2, ...)` | `tuple` | Elements converted recursively |
+| `Tuple(T1, T2, ...)` | `tuple` | Elements converted recursively; field names of a named tuple are dropped |
 | `Map(K, V)` | `dict` | Keys and values converted |
 | **Modifiers** | | |
 | `Nullable(T)` | `T \| None` | Nulls become `None` |
 | `LowCardinality(T)` | `T` | Transparent wrapper |
+| `SimpleAggregateFunction(f, T)` | `T` | Transparent wrapper |
 | **Other** | | |
 | `JSON` | `Any` | `json.loads()` result |
+| `Nothing` | `None` | Only ever seen as `Nullable(Nothing)`, the type of a bare `NULL` |
+
+Not supported: `Variant`, `Dynamic`, the geo types (`Point`, `Ring`, `Polygon`, `MultiPolygon`,
+`LineString`, `MultiLineString`), `Interval*`, `BFloat16`, `Nested` (with `flatten_nested=0`),
+`AggregateFunction` and `QBit`. Selecting one raises `ChProtocolError`.
 
 **Python to ClickHouse conversion:**
 

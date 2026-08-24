@@ -17,10 +17,13 @@ from aiochlite.exceptions import ChArgumentError, ChProtocolError
 from ._type_parsing import (
     BINARY_TYPE,
     FIXED_BINARY_TYPE,
+    SIMPLE_AGGREGATE_PREFIX,
     extract_base_type,
     extract_timezone,
     holds_text,
     parse_timezone,
+    simple_aggregate_element,
+    split_tuple_elements,
     split_type_arguments,
     to_binary_type,
     unwrap_wrappers,
@@ -124,9 +127,6 @@ class _BinaryReader:
         value = struct.unpack_from("<q", self._data, self._pos)[0]
         self._pos += 8
         return value
-
-    def read_int128(self) -> int:
-        return int.from_bytes(self._read(16), "little", signed=True)
 
     def read_float32(self) -> float:
         if self._pos + 4 > len(self._data):
@@ -419,6 +419,23 @@ def _fixedstring_reader(ch_type: str) -> Callable[[_Reader], str]:
     return _read_fixedstring
 
 
+def _wide_int_reader(size: int, *, signed: bool) -> Callable[[_Reader], int]:
+    """Int128/Int256 and their unsigned forms, which `struct` has no code for."""
+
+    def _read_wide_int(reader: _Reader) -> int:
+        return int.from_bytes(reader._read(size), "little", signed=signed)
+
+    return _read_wide_int
+
+
+def _signed_int_from_bytes(raw: bytes) -> int:
+    return int.from_bytes(raw, "little", signed=True)
+
+
+def _unsigned_int_from_bytes(raw: bytes) -> int:
+    return int.from_bytes(raw, "little", signed=False)
+
+
 def _binary_reader(reader: _Reader) -> bytes:
     return reader.read_bytes(reader.read_varuint())
 
@@ -523,7 +540,7 @@ def _map_reader(ch_type: str, server_tz: str | None) -> Callable[[_Reader], dict
 
 def _tuple_reader(ch_type: str, server_tz: str | None) -> Callable[[_Reader], tuple[Any, ...]]:
     inner = ch_type[6:-1]
-    element_types = split_type_arguments(inner)
+    element_types = split_tuple_elements(inner)
     readers = tuple(_reader_for_type(t, server_tz) for t in element_types)
 
     # Unrolling the common sizes avoids a throwaway generator per row. A tuple display evaluates
@@ -589,12 +606,18 @@ _PRIMITIVE_READERS: dict[str, Callable[[_Reader], Any]] = {
     "Int16": lambda r: r.read_int16(),
     "Int32": lambda r: r.read_int32(),
     "Int64": lambda r: r.read_int64(),
+    "Int128": _wide_int_reader(16, signed=True),
+    "Int256": _wide_int_reader(32, signed=True),
     "JSON": _json_reader,
+    # `SELECT NULL` types as Nullable(Nothing): the null flag is the whole value.
+    "Nothing": lambda _r: None,
     "String": lambda r: r.read_string(),
     "UInt8": lambda r: r.read_uint8(),
     "UInt16": lambda r: r.read_uint16(),
     "UInt32": lambda r: r.read_uint32(),
     "UInt64": lambda r: r.read_uint64(),
+    "UInt128": _wide_int_reader(16, signed=False),
+    "UInt256": _wide_int_reader(32, signed=False),
 }
 
 _COMPLEX_READERS: dict[str, Callable[[str], Callable[[_Reader], Any]]] = {
@@ -621,10 +644,23 @@ _TZ_AWARE_READERS: dict[str, Callable[[str, str | None], Callable[[_Reader], Any
 }
 
 
+def _strip_transparent_once(ch_type: str) -> str | None:
+    """The inner type of a wrapper RowBinary leaves no trace of, or None if there is no wrapper."""
+    if ch_type.startswith("LowCardinality("):
+        return ch_type[15:-1]
+    if ch_type.startswith(SIMPLE_AGGREGATE_PREFIX):
+        return simple_aggregate_element(ch_type)
+
+    return None
+
+
 @lru_cache(maxsize=256)
 def _reader_for_type(ch_type: str, server_tz: str | None = None) -> Callable[[_Reader], Any]:
-    if ch_type.startswith("LowCardinality("):
-        return _reader_for_type(ch_type[15:-1], server_tz)
+    # Ahead of the Nullable branch: a wrapper may hold one, and taking both off at once would
+    # drop its null flag.
+    transparent = _strip_transparent_once(ch_type)
+    if transparent is not None:
+        return _reader_for_type(transparent, server_tz)
 
     if ch_type.startswith("Nullable("):
         inner = _reader_for_type(ch_type[9:-1], server_tz)
@@ -691,6 +727,11 @@ _FIXED_CONVERTERS: dict[str, Callable[[str, str | None], tuple[str, Callable[[An
     "DateTime64": lambda ch_type, tz: ("q", _value_cache(_datetime64_converter(ch_type, tz))),
     "Enum8": lambda ch_type, _tz: ("b", _enum_converter(ch_type)),
     "Enum16": lambda ch_type, _tz: ("h", _enum_converter(ch_type)),
+    # Raw bytes for the same reason the wide decimals are.
+    "Int128": lambda _ch_type, _tz: ("16s", _signed_int_from_bytes),
+    "Int256": lambda _ch_type, _tz: ("32s", _signed_int_from_bytes),
+    "UInt128": lambda _ch_type, _tz: ("16s", _unsigned_int_from_bytes),
+    "UInt256": lambda _ch_type, _tz: ("32s", _unsigned_int_from_bytes),
     "FixedBinary": lambda ch_type, _tz: (f"{_fixedstring_size(ch_type)}s", None),
     "FixedString": lambda ch_type, _tz: (f"{_fixedstring_size(ch_type)}s", _fixedstring_from_bytes),
     "IPv4": lambda _ch_type, _tz: ("I", ipaddress.IPv4Address),
@@ -897,21 +938,24 @@ def _read_bytes_array(data: bytes, pos: int, count: int, end: int) -> tuple[list
     return values, pos
 
 
-def _strip_low_cardinality(ch_type: str) -> str:
+def _strip_transparent(ch_type: str) -> str:
     unwrapped = ch_type.strip()
-    while unwrapped.startswith("LowCardinality(") and unwrapped.endswith(")"):
-        unwrapped = unwrapped[15:-1].strip()
+    while unwrapped.endswith(")"):
+        inner = _strip_transparent_once(unwrapped)
+        if inner is None:
+            break
+        unwrapped = inner.strip()
 
     return unwrapped
 
 
 def _codegen_value_type(ch_type: str) -> str:
     """The type whose converter the column needs, with the wrappers around it taken off."""
-    unwrapped = _strip_low_cardinality(ch_type)
+    unwrapped = _strip_transparent(ch_type)
     if unwrapped.startswith("Array(") and unwrapped.endswith(")"):
-        unwrapped = _strip_low_cardinality(unwrapped[6:-1])
+        unwrapped = _strip_transparent(unwrapped[6:-1])
     if unwrapped.startswith("Nullable(") and unwrapped.endswith(")"):
-        return _strip_low_cardinality(unwrapped[9:-1])
+        return _strip_transparent(unwrapped[9:-1])
 
     return unwrapped
 
@@ -922,7 +966,7 @@ def _codegen_nullable_kind(inner_type: str, server_tz: str | None, depth: int) -
 
 
 def _codegen_array_kind(element_type: str, server_tz: str | None, depth: int) -> tuple[str, Any]:
-    element = _strip_low_cardinality(element_type)
+    element = _strip_transparent(element_type)
     if element == "String":
         return "array_string", None
 
@@ -940,7 +984,7 @@ def _codegen_array_kind(element_type: str, server_tz: str | None, depth: int) ->
 
 def _codegen_tuple_kind(element_types: str, server_tz: str | None, depth: int) -> tuple[str, Any]:
     elements: list[tuple[str, str, Any]] = []
-    for element in split_type_arguments(element_types):
+    for element in split_tuple_elements(element_types):
         kind = _codegen_kind(element, server_tz, depth)
         if kind is None or kind[0] == "reader":
             return "reader", None
@@ -988,7 +1032,7 @@ def _codegen_kind(ch_type: str, server_tz: str | None, depth: int = 0) -> tuple[
     `("array_binary", None)`, `("array", element)`, `("tuple", elements)`, `("map", entries)`,
     or `("reader", None)` for a column read through its own closure.
     """
-    unwrapped = _strip_low_cardinality(ch_type)
+    unwrapped = _strip_transparent(ch_type)
 
     for prefix, build in _CODEGEN_CONTAINERS.items():
         if unwrapped.startswith(prefix) and unwrapped.endswith(")"):
@@ -1530,6 +1574,10 @@ _FIXED_SIZES: dict[str, int] = {
     "Int32": 4,
     "UInt64": 8,
     "Int64": 8,
+    "UInt128": 16,
+    "Int128": 16,
+    "UInt256": 32,
+    "Int256": 32,
     "Float32": 4,
     "Float64": 8,
     "Date": 2,
@@ -1540,31 +1588,18 @@ _FIXED_SIZES: dict[str, int] = {
     "Enum16": 2,
     "IPv4": 4,
     "IPv6": 16,
+    "Nothing": 0,
 }
 
 
 def _array_skipper(inner_type: str) -> Callable[[_Reader], None]:
-    inner_type = inner_type.strip()
-
-    if inner_type.startswith("LowCardinality(") and inner_type.endswith(")"):
-        return _array_skipper(inner_type[15:-1])
+    # `_fixed_width` is None for a Nullable element and for any wrapper hiding one, whose null
+    # flag one multiply would skip straight past.
+    element_size = _fixed_width(inner_type)
+    if element_size is not None:
+        return lambda reader: reader.skip(reader.read_varuint() * element_size)
 
     inner_skip = _skipper_for_type(inner_type)
-
-    # Nullable(T) elements vary in size (null flag + optional value), so they must be scanned
-    # one by one instead of multiplying by a fixed width.
-    if inner_type.startswith("Nullable(") and inner_type.endswith(")"):
-
-        def _skip_array_nullable(reader: _Reader):
-            count = reader.read_varuint()
-            for _ in range(count):
-                inner_skip(reader)
-
-        return _skip_array_nullable
-
-    fixed_skip = _fixed_width_array_skipper(inner_type)
-    if fixed_skip is not None:
-        return fixed_skip
 
     def _skip_array(reader: _Reader):
         count = reader.read_varuint()
@@ -1574,30 +1609,17 @@ def _array_skipper(inner_type: str) -> Callable[[_Reader], None]:
     return _skip_array
 
 
-def _fixed_width_array_skipper(inner_type: str) -> Callable[[_Reader], None] | None:
-    inner_base = extract_base_type(inner_type)
-
-    inner_fixed = _FIXED_SIZES.get(inner_base)
-    if inner_fixed is not None:
-        return lambda reader: reader.skip(reader.read_varuint() * inner_fixed)
-
-    if inner_base in {"DateTime64", "Time64"}:
-        return lambda reader: reader.skip(reader.read_varuint() * 8)
-
-    if inner_base.startswith("Decimal"):
-        precision, _ = _decimal_meta(inner_type)
-        size = _decimal_size(precision)
-        return lambda reader: reader.skip(reader.read_varuint() * size)
-
-    if inner_base == "UUID":
-        return lambda reader: reader.skip(reader.read_varuint() * 16)
-
-    return None
-
-
 def _map_skipper(ch_type: str) -> Callable[[_Reader], None]:
     inner = ch_type[ch_type.index("(") + 1 : ch_type.rindex(")")]
     key_type, value_type = split_type_arguments(inner)
+
+    # Two fixed halves make every pair one width; same Nullable guard as the array above.
+    key_size = _fixed_width(key_type)
+    value_size = _fixed_width(value_type)
+    if key_size is not None and value_size is not None:
+        pair_size = key_size + value_size
+        return lambda reader: reader.skip(reader.read_varuint() * pair_size)
+
     key_skip = _skipper_for_type(key_type)
     value_skip = _skipper_for_type(value_type)
 
@@ -1607,32 +1629,12 @@ def _map_skipper(ch_type: str) -> Callable[[_Reader], None]:
             key_skip(reader)
             value_skip(reader)
 
-    # Nullable values are not fixed-size per item, so fixed-size shortcuts are unsafe.
-    if key_type.strip().startswith("Nullable(") or value_type.strip().startswith("Nullable("):
-        return _skip_map
-
-    key_unwrapped = unwrap_wrappers(key_type)
-    value_unwrapped = unwrap_wrappers(value_type)
-    key_base = extract_base_type(key_unwrapped)
-    value_base = extract_base_type(value_unwrapped)
-
-    key_fixed = _FIXED_SIZES.get(key_base)
-    value_fixed = _FIXED_SIZES.get(value_base)
-    if key_fixed is not None and value_fixed is not None:
-        pair_size = key_fixed + value_fixed
-        return lambda reader: reader.skip(reader.read_varuint() * pair_size)
-
-    if key_base == "UUID" and value_fixed is not None:
-        return lambda reader: reader.skip(reader.read_varuint() * (16 + value_fixed))
-    if value_base == "UUID" and key_fixed is not None:
-        return lambda reader: reader.skip(reader.read_varuint() * (key_fixed + 16))
-
     return _skip_map
 
 
 def _tuple_skipper(ch_type: str) -> Callable[[_Reader], None]:
     inner = ch_type[6:-1]
-    element_types = split_type_arguments(inner)
+    element_types = split_tuple_elements(inner)
     skippers = tuple(_skipper_for_type(t) for t in element_types)
 
     def _skip_tuple(reader: _Reader):
@@ -1657,8 +1659,9 @@ _COMPLEX_SKIPPERS: dict[str, Callable[[str], Callable[[_Reader], None]]] = {
 
 @lru_cache(maxsize=256)
 def _skipper_for_type(ch_type: str) -> Callable[[_Reader], None]:
-    if ch_type.startswith("LowCardinality("):
-        return _skipper_for_type(ch_type[15:-1])
+    transparent = _strip_transparent_once(ch_type)
+    if transparent is not None:
+        return _skipper_for_type(transparent)
 
     if ch_type.startswith("Nullable("):
         inner = _skipper_for_type(ch_type[9:-1])
@@ -1705,7 +1708,10 @@ def _fixed_width(ch_type: str) -> int | None:
     unwrapped = unwrap_wrappers(ch_type)
     base = extract_base_type(unwrapped)
 
-    size = _FIXED_SIZES.get(base) or _WIDE_FIXED_SIZES.get(base)
+    # Checked separately rather than with `or`: Nothing is a real width of zero.
+    size = _FIXED_SIZES.get(base)
+    if size is None:
+        size = _WIDE_FIXED_SIZES.get(base)
     if size is not None:
         return size
 

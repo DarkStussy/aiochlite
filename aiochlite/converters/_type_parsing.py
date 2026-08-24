@@ -11,6 +11,18 @@ _DATETIME_TZ_RE: Final[re.Pattern[str]] = re.compile(
 )
 
 
+SIMPLE_AGGREGATE_PREFIX: Final[str] = "SimpleAggregateFunction("
+
+
+def simple_aggregate_element(ch_type: str) -> str:
+    """The `T` of `SimpleAggregateFunction(func, T)`: what the wire carries."""
+    arguments = split_type_arguments(ch_type[len(SIMPLE_AGGREGATE_PREFIX) : -1])
+    if len(arguments) != 2:
+        raise ValueError(f"Invalid SimpleAggregateFunction definition: {ch_type}")
+
+    return arguments[1]
+
+
 @lru_cache(maxsize=256)
 def extract_base_type(ch_type: str) -> str:
     if ch_type.startswith("Nullable("):
@@ -18,6 +30,9 @@ def extract_base_type(ch_type: str) -> str:
 
     if ch_type.startswith("LowCardinality("):
         return extract_base_type(ch_type[15:-1])
+
+    if ch_type.startswith(SIMPLE_AGGREGATE_PREFIX):
+        return extract_base_type(simple_aggregate_element(ch_type))
 
     if "(" in ch_type:
         return ch_type[: ch_type.index("(")]
@@ -35,53 +50,85 @@ def unwrap_wrappers(ch_type: str) -> str:
         if unwrapped.startswith("LowCardinality(") and unwrapped.endswith(")"):
             unwrapped = unwrapped[15:-1].strip()
             continue
+        if unwrapped.startswith(SIMPLE_AGGREGATE_PREFIX) and unwrapped.endswith(")"):
+            unwrapped = simple_aggregate_element(unwrapped).strip()
+            continue
         return unwrapped
+
+
+def _quoted_run_end(text: str, start: int) -> int:
+    """Index just past the quoted run opening at `start`, or the end if it never closes."""
+    quote = text[start]
+    index = start + 1
+    while index < len(text):
+        char = text[index]
+        if char == "\\":  # `b\`q` closes at the second backquote, not the first
+            index += 2
+            continue
+        if char == quote:
+            return index + 1
+
+        index += 1
+
+    return len(text)
 
 
 @lru_cache(maxsize=256)
 def split_type_arguments(type_list: str) -> list[str]:
     parts: list[str] = []
-    buf: list[str] = []
     depth = 0
-    in_quote = False
+    start = 0
+    index = 0
 
-    def _flush() -> None:
-        part = "".join(buf).strip()
-        if part:
-            parts.append(part)
-        buf.clear()
-
-    for ch in type_list:
-        if in_quote:
-            buf.append(ch)
-            if ch == "'":
-                in_quote = False
+    while index < len(type_list):
+        char = type_list[index]
+        # Enum labels are single-quoted, field names backquoted, and both may hold a comma.
+        if char in "'`":
+            index = _quoted_run_end(type_list, index)
             continue
 
-        if ch == "'":
-            in_quote = True
-            buf.append(ch)
-            continue
-
-        if ch == "(":
+        if char == "(":
             depth += 1
-            buf.append(ch)
-            continue
-
-        if ch == ")":
+        elif char == ")":
             depth -= 1
-            buf.append(ch)
-            continue
+        elif char == "," and depth == 0:
+            part = type_list[start:index].strip()
+            if part:
+                parts.append(part)
+            start = index + 1
 
-        if ch == "," and depth == 0:
-            _flush()
-            continue
+        index += 1
 
-        buf.append(ch)
-
-    _flush()
+    last = type_list[start:].strip()
+    if last:
+        parts.append(last)
 
     return parts
+
+
+_FIELD_NAME_RE: Final[re.Pattern[str]] = re.compile(r"[A-Za-z_][0-9A-Za-z_]*\s")
+
+
+def split_field_name(element: str) -> tuple[str | None, str]:
+    """A `Tuple` element split into its field name, verbatim, and its type.
+
+    Only a field name puts whitespace at this level: a parameterized type keeps its arguments
+    inside parentheses.
+    """
+    element = element.strip()
+    if element.startswith("`"):
+        end = _quoted_run_end(element, 0)
+        name, rest = element[:end], element[end:].strip()
+        return (name, rest) if rest else (None, element)  # unterminated: no type behind it
+
+    match = _FIELD_NAME_RE.match(element)
+    return (match.group().strip(), element[match.end() :].strip()) if match else (None, element)
+
+
+@lru_cache(maxsize=256)
+def split_tuple_elements(type_list: str) -> list[str]:
+    """The element types of a `Tuple` argument list, with any field names dropped."""
+    return [split_field_name(element)[1] for element in split_type_arguments(type_list)]
 
 
 # Types no server ever names: they mark a String/FixedString to decode as bytes.
@@ -89,22 +136,21 @@ BINARY_TYPE: Final[str] = "Binary"
 FIXED_BINARY_TYPE: Final[str] = "FixedBinary"
 
 _BINARY_WRAPPERS: Final[tuple[str, ...]] = ("Nullable(", "LowCardinality(", "Array(")
-_BINARY_CONTAINERS: Final[tuple[str, ...]] = ("Map(", "Tuple(")
+# `SimpleAggregateFunction` belongs here: its aggregate name matches no rule below, so rewriting
+# the argument list leaves the name alone.
+_BINARY_CONTAINERS: Final[tuple[str, ...]] = ("Map(", "Tuple(", SIMPLE_AGGREGATE_PREFIX)
+
+
+def _to_binary_element(element: str) -> str:
+    """Rewrite one container element, putting back the field name a named `Tuple` carries."""
+    name, element_type = split_field_name(element)
+    rewritten = to_binary_type(element_type)
+    return rewritten if name is None else f"{name} {rewritten}"
 
 
 @lru_cache(maxsize=256)
 def to_binary_type(ch_type: str) -> str:
-    """Rewrite every nested ``String``/``FixedString`` to its binary pseudo-type.
-
-    Rewriting the type instead of passing a flag keeps every decoder and cache keyed by type
-    string alone.
-
-    Args:
-        ch_type (str): ClickHouse type.
-
-    Returns:
-        str: Rewritten type, or `ch_type` when it holds no text.
-    """
+    """Rewrite every nested ``String``/``FixedString`` to its binary pseudo-type."""
     unwrapped = ch_type.strip()
     if unwrapped == "String":
         return BINARY_TYPE
@@ -120,20 +166,13 @@ def to_binary_type(ch_type: str) -> str:
     for prefix in _BINARY_CONTAINERS:
         if unwrapped.startswith(prefix) and unwrapped.endswith(")"):
             arguments = split_type_arguments(unwrapped[len(prefix) : -1])
-            return f"{prefix}{', '.join(to_binary_type(argument) for argument in arguments)})"
+            return f"{prefix}{', '.join(_to_binary_element(argument) for argument in arguments)})"
 
     return unwrapped
 
 
 def holds_text(ch_type: str) -> bool:
-    """Whether the type has a ``String``/``FixedString`` anywhere in it.
-
-    Args:
-        ch_type (str): ClickHouse type.
-
-    Returns:
-        bool: True if any part of it decodes as text.
-    """
+    """Whether the type has a ``String``/``FixedString`` anywhere in it."""
     return to_binary_type(ch_type) != ch_type.strip()
 
 

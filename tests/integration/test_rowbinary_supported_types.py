@@ -140,3 +140,85 @@ async def test_rowbinary_datetime_timezone(ch_client: AsyncChClient):
     assert row["dt_naive"] == datetime(2025, 12, 14, 13, 0, 0)
     assert row["dt64_naive"].tzinfo is None
     assert row["dt64_naive"] == datetime(2025, 12, 14, 13, 0, 0, 500000)
+
+
+@pytest.mark.parametrize("ch_client", [False, True], ids=["eager", "lazy"], indirect=True)
+async def test_rowbinary_wide_integers(ch_client: AsyncChClient):
+    query = r"""
+        SELECT
+            toInt128(-5) AS i128,
+            toInt128('170141183460469231731687303715884105727') AS i128_max,
+            toUInt128('340282366920938463463374607431768211455') AS u128_max,
+            toInt256('-57896044618658097711785492504343953926634992332820282019728792003956564819968') AS i256_min,
+            toUInt256(9) AS u256,
+            [toInt128(-1), toInt128(2)] AS arr_i128,
+            CAST(NULL AS Nullable(Int256)) AS n_i256
+    """
+
+    row = await ch_client.fetchone(query)
+    assert row is not None
+
+    assert row["i128"] == -5
+    assert row["i128_max"] == 2**127 - 1
+    assert row["u128_max"] == 2**128 - 1
+    assert row["i256_min"] == -(2**255)
+    assert row["u256"] == 9
+    assert row["arr_i128"] == [-1, 2]
+    assert row["n_i256"] is None
+
+
+@pytest.mark.parametrize("ch_client", [False, True], ids=["eager", "lazy"], indirect=True)
+async def test_rowbinary_null_literal(ch_client: AsyncChClient):
+    """A bare NULL types as Nullable(Nothing), so this is the plainest query there is to break."""
+    rows = await ch_client.fetch_rows("SELECT NULL AS v FROM numbers(2)")
+
+    assert rows == [(None,), (None,)]
+
+
+@pytest.mark.parametrize("ch_client", [False, True], ids=["eager", "lazy"], indirect=True)
+async def test_rowbinary_named_tuple(ch_client: AsyncChClient):
+    """Names the server really emits, including the ones it backquotes."""
+    query = r"""
+        SELECT
+            tuple(1, 'a')::Tuple(a UInt8, b String) AS named,
+            tuple(1)::Tuple(`has space, comma` UInt8) AS backquoted,
+            tuple(1)::Tuple(a Enum8('x, y' = 1)) AS enum_label,
+            tuple(tuple(1))::Tuple(a Tuple(b UInt8)) AS nested,
+            tuple(NULL)::Tuple(a Nullable(UInt8)) AS nullable,
+            [tuple(1, 'a')::Tuple(x UInt8, y String)] AS in_array,
+            map('k', tuple(1, 'a')::Tuple(x UInt8, y String)) AS in_map
+    """
+
+    row = await ch_client.fetchone(query)
+    assert row is not None
+
+    assert row["named"] == (1, "a")
+    assert row["backquoted"] == (1,)
+    assert row["enum_label"] == ("x, y",)
+    assert row["nested"] == ((1,),)
+    assert row["nullable"] == (None,)
+    assert row["in_array"] == [(1, "a")]
+    assert row["in_map"] == {"k": (1, "a")}
+
+
+@pytest.mark.parametrize("ch_client", [False, True], ids=["eager", "lazy"], indirect=True)
+async def test_rowbinary_simple_aggregate_function(ch_client: AsyncChClient):
+    """The aggregate name is metadata: on the wire the column is its element type."""
+    query = r"""
+        SELECT
+            sumSimpleState(number) AS s,
+            anyLastSimpleState(toNullable(number)) AS n,
+            groupArrayArraySimpleState([number]) AS arr,
+            maxMapSimpleState(map(toUInt8(1), toUInt8(2))) AS m,
+            minSimpleState(toString(number)) AS text
+        FROM numbers(3)
+    """
+
+    row = await ch_client.fetchone(query)
+    assert row is not None
+
+    assert row["s"] == 3
+    assert row["n"] == 2
+    assert row["arr"] == [0, 1, 2]
+    assert row["m"] == {1: 2}
+    assert row["text"] == "0"

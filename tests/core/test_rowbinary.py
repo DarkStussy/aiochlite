@@ -1301,3 +1301,134 @@ def test_reading_past_the_end_raises_a_decode_error(method: str, size: int):
 
     with pytest.raises(ValueError, match="Unexpected end of data"):
         getattr(reader, method)()
+
+
+def _payload(columns: list[tuple[str, str]], body: bytes) -> bytes:
+    """A RowBinaryWithNamesAndTypes header over `columns`, plus `body`."""
+    parts = [_encode_varuint(len(columns))]
+    parts += [_encode_string(name) for name, _ in columns]
+    parts += [_encode_string(ch_type) for _, ch_type in columns]
+    return b"".join(parts) + body
+
+
+def _decode(columns: list[tuple[str, str]], body: bytes) -> list[Any]:
+    """Rows from one payload, with the eager and lazy paths asserted to agree."""
+    eager = [list(row) for row in parse_rowbinary_with_names_and_types(_payload(columns, body), "UTC")[2]]
+    lazy = [list(row) for row in parse_rowbinary_with_names_and_types_lazy(_payload(columns, body), "UTC")[2]]
+
+    assert eager == lazy
+    return eager
+
+
+def test_nullable_nothing_decodes_to_none():
+    """One flag byte per row is the whole value: Nothing itself occupies nothing."""
+    assert _decode([("v", "Nullable(Nothing)")], b"\x01\x01") == [[None], [None]]
+
+
+def test_nullable_nothing_beside_another_column():
+    body = b"\x01" + (7).to_bytes(1, "little")
+    assert _decode([("v", "Nullable(Nothing)"), ("n", "UInt8")], body) == [[None, 7]]
+
+
+@pytest.mark.parametrize(
+    ("ch_type", "size", "value"),
+    [
+        ("Int128", 16, -5),
+        ("Int128", 16, 2**127 - 1),
+        ("Int128", 16, -(2**127)),
+        ("UInt128", 16, 2**128 - 1),
+        ("Int256", 32, -(2**255)),
+        ("UInt256", 32, 2**256 - 1),
+    ],
+)
+def test_wide_integers(ch_type: str, size: int, value: int):
+    body = value.to_bytes(size, "little", signed=value < 0)
+    assert _decode([("v", ch_type)], body) == [[value]]
+
+
+def test_wide_integer_beside_a_string_takes_the_compiled_path():
+    compiled = rowbinary._compiled_row_decoder(("Int128", "String"), "UTC", as_tuple=True)
+    assert compiled is not None
+
+    body = (-5).to_bytes(16, "little", signed=True) + _encode_string("x")
+    assert _decode([("a", "Int128"), ("b", "String")], body) == [[-5, "x"]]
+
+
+def test_array_of_wide_integers():
+    body = _encode_varuint(2) + (-1).to_bytes(16, "little", signed=True) + (2).to_bytes(16, "little")
+    assert _decode([("v", "Array(Int128)")], body) == [[[-1, 2]]]
+
+
+def test_named_tuple_decodes_positionally():
+    """Field names live in the type string only; the wire carries a plain tuple."""
+    body = (1).to_bytes(1, "little") + _encode_string("a")
+    assert _decode([("v", "Tuple(a UInt8, b String)")], body) == [[(1, "a")]]
+
+
+def test_named_tuple_with_a_backquoted_name():
+    body = (1).to_bytes(1, "little")
+    assert _decode([("v", "Tuple(`has space, comma` UInt8)")], body) == [[(1,)]]
+
+
+def test_named_tuple_of_only_fixed_elements_is_emitted_inline():
+    """These elements share one struct call, so the names must be gone before the codegen."""
+    assert rowbinary._codegen_kind("Tuple(a UInt8, b UInt32)", "UTC") == (
+        "tuple",
+        [("UInt8", "fixed", "B"), ("UInt32", "fixed", "I")],
+    )
+
+    body = (1).to_bytes(1, "little") + (2).to_bytes(4, "little")
+    assert _decode([("v", "Tuple(a UInt8, b UInt32)")], body) == [[(1, 2)]]
+
+
+def test_simple_aggregate_function_reads_as_its_element():
+    assert _decode([("v", "SimpleAggregateFunction(sum, UInt64)")], (3).to_bytes(8, "little")) == [[3]]
+
+
+def test_simple_aggregate_function_keeps_a_nullable_element_nullable():
+    """Taking both wrappers off at once would read the value where its null flag sits."""
+    columns = [("v", "SimpleAggregateFunction(anyLast, Nullable(UInt64))")]
+    body = b"\x00" + (2).to_bytes(8, "little") + b"\x01"
+
+    assert _decode(columns, body) == [[2], [None]]
+
+
+def _lazy_rows(columns: list[tuple[str, str]], body: bytes) -> list[list[Any]]:
+    """Lazy rows, which reach every cell through the skippers rather than the readers."""
+    _names, _types, rows = parse_rowbinary_with_names_and_types_lazy(_payload(columns, body), "UTC")
+    return [list(row) for row in rows]
+
+
+# Wrappers RowBinary does not encode, each holding a Nullable whose flag a fixed-width skip
+# would run straight over.
+NULLABLE_BEHIND_A_WRAPPER = [
+    "Nullable(UInt64)",
+    "LowCardinality(Nullable(UInt64))",
+    "SimpleAggregateFunction(anyLast, Nullable(UInt64))",
+]
+
+
+@pytest.mark.parametrize("inner", NULLABLE_BEHIND_A_WRAPPER)
+def test_skipping_an_array_of_nullable_elements_counts_the_null_flags(inner: str):
+    """A trailing column is what catches a short skip: the array itself still looks decodable."""
+    element = b"\x00" + (1).to_bytes(8, "little")
+    body = _encode_varuint(2) + element + b"\x01" + (9).to_bytes(1, "little")
+
+    assert _lazy_rows([("a", f"Array({inner})"), ("tail", "UInt8")], body) == [[[1, None], 9]]
+
+
+@pytest.mark.parametrize("inner", NULLABLE_BEHIND_A_WRAPPER)
+def test_skipping_a_map_of_nullable_values_counts_the_null_flags(inner: str):
+    """The key is fixed-width, which is what made the pair look like a fixed-width pair."""
+    body = _encode_varuint(1) + (1).to_bytes(1, "little") + b"\x01" + (9).to_bytes(1, "little")
+
+    assert _lazy_rows([("a", f"Map(UInt8, {inner})"), ("tail", "UInt8")], body) == [[{1: None}, 9]]
+
+
+def test_skipping_keeps_the_fixed_width_shortcut_where_nothing_is_nullable():
+    """The guard above must not cost every array its one-multiply skip."""
+    body = _encode_varuint(2) + (1).to_bytes(8, "little") + (2).to_bytes(8, "little")
+    columns = [("a", "Array(SimpleAggregateFunction(sum, UInt64))")]
+
+    assert rowbinary._fixed_width("SimpleAggregateFunction(sum, UInt64)") == 8
+    assert _lazy_rows(columns, body) == [[[1, 2]]]
