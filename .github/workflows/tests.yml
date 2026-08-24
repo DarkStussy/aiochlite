@@ -35,6 +35,10 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  # The runner's system CPython 3.12.3, which uv picks over a managed build, segfaults during GC.
+  UV_MANAGED_PYTHON: "1"
+
 jobs:
   test:
     strategy:
