@@ -1,6 +1,6 @@
 [project]
 name = "aiochlite"
-version = "1.8.0"
+version = "1.8.1"
 authors = [{ name = "darkstussy" }, ]
 description = "Lightweight asynchronous ClickHouse client for Python built on aiohttp."
 readme = "README.md"

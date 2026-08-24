@@ -1,14 +1,13 @@
 # Changelog
 
-## Unreleased
-
-### Added
-- `bytes` can be sent, not just read. A ClickHouse `String` is any byte sequence, and until now
-  only `binary_columns` covered the reading half. A `bytes` parameter travels as `\xNN`, and an
-  insert carries the bytes themselves, so every value in `0..255` reaches the server intact —
-  in a container, an external table and a `Map` value alike.
+## 1.8.1 (2026-08-25)
 
 ### Fixed
+- **A `bytes` value that is not UTF-8 could not be sent at all**, raising `UnicodeDecodeError`
+  before the request was even built — the parameter type was documented, but only text ever
+  survived it. A ClickHouse `String` is any byte sequence, and `binary_columns` covered only the
+  reading half. A parameter now travels as `\xNN` and an insert carries the bytes themselves, so
+  every value in `0..255` arrives intact, inside a container, an external table and a `Map` alike.
 - **A string parameter holding a backslash arrived mangled**, and one holding a tab or a newline
   was rejected with `Code: 457`. The server reads a parameter back from the [escaped
   format](https://clickhouse.com/docs/concepts/features/interfaces/http#tabs-in-url-parameters),
