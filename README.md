@@ -3,6 +3,7 @@
 ![Python](https://img.shields.io/badge/python-3.12%2B-blue)
 ![GitHub License](https://img.shields.io/github/license/darkstussy/aiochlite?color=brightgreen)
 [![PyPI - Version](https://img.shields.io/pypi/v/aiochlite?color=brightgreen)](https://pypi.org/project/aiochlite/)
+[![PyPI - Downloads](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fshieldcn.dev%2Fpypi%2Fdm%2Faiochlite.json&query=%24.value&label=downloads&color=brightgreen&style=flat)](https://pypistats.org/packages/aiochlite)
 ![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/darkstussy/aiochlite/tests.yml?style=flat&label=Tests)
 [![codecov](https://codecov.io/gh/darkstussy/aiochlite/branch/main/graph/badge.svg)](https://codecov.io/gh/darkstussy/aiochlite)
 ![GitHub last commit](https://img.shields.io/github/last-commit/darkstussy/aiochlite?color=brightgreen)
