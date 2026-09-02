@@ -622,7 +622,7 @@ _PRIMITIVE_READERS: dict[str, Callable[[_Reader], Any]] = {
 
 _COMPLEX_READERS: dict[str, Callable[[str], Callable[[_Reader], Any]]] = {
     "Date": lambda _: lambda r: _EPOCH_DATE + timedelta(days=r.read_uint16()),
-    "Date32": lambda _: lambda r: _EPOCH_DATE + timedelta(days=r.read_int32()),
+    "Date32": lambda _: lambda r: _days_to_date32(r.read_int32()),
     "Time": lambda _: lambda r: timedelta(seconds=r.read_int32()),
     "Time64": _time64_reader,
     "Enum16": _enum_reader,
@@ -714,6 +714,17 @@ def _days_to_date(days: int) -> date:
     return _EPOCH_DATE + timedelta(days=days)
 
 
+def _days_to_date32(days: int) -> date:
+    """Same, for the one type that can hold a day `date` cannot: ClickHouse 26.8 widened `Date32` to year 0."""
+    try:
+        return _EPOCH_DATE + timedelta(days=days)
+    except OverflowError:
+        raise ChProtocolError(
+            f"Date32 value {days} days from 1970-01-01 is outside the range datetime.date can hold "
+            f"({date.min} to {date.max})."
+        ) from None
+
+
 def _seconds_to_timedelta(seconds: int) -> timedelta:
     return timedelta(seconds=seconds)
 
@@ -722,7 +733,7 @@ def _seconds_to_timedelta(seconds: int) -> timedelta:
 # code plus the converter, or None where the code already yields the value (`FixedBinary`).
 _FIXED_CONVERTERS: dict[str, Callable[[str, str | None], tuple[str, Callable[[Any], Any] | None]]] = {
     "Date": lambda _ch_type, _tz: ("H", _days_to_date),
-    "Date32": lambda _ch_type, _tz: ("i", _days_to_date),
+    "Date32": lambda _ch_type, _tz: ("i", _days_to_date32),
     "DateTime": lambda ch_type, tz: ("I", _value_cache(_datetime_converter(ch_type, tz))),
     "DateTime64": lambda ch_type, tz: ("q", _value_cache(_datetime64_converter(ch_type, tz))),
     "Enum8": lambda ch_type, _tz: ("b", _enum_converter(ch_type)),

@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.8.2 (2026-09-02)
+
+### Fixed
+- **A `Date32` before year 1 escaped the decoder as a bare `OverflowError`.** ClickHouse 26.8
+  widened `Date32` from `[1900-01-01, 2299-12-31]` to `[0000-01-01, 9999-12-31]`, and year 0 is the
+  one part of that range `datetime.date` cannot hold. Such a value now raises `ChProtocolError`
+  naming the day count and the range `date` does hold; the rest of the widened range, `0001-01-01`
+  through `9999-12-31`, decodes as it should, wherever the column sits.
+
+### Changed
+- Tested against ClickHouse 26.8 LTS, which replaces 26.3 as the server CI runs the suite against.
+  25.8 LTS stays the oldest supported server.
+
 ## 1.8.1 (2026-08-25)
 
 ### Fixed

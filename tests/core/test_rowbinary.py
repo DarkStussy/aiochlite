@@ -249,6 +249,31 @@ def test_column_timezone_stands_in_for_a_missing_header(ch_type: str, consume: C
     assert consume(_datetime_payload(ch_type), None) == [_MOMENT]
 
 
+def _date32_payload(ch_type: str, days: int) -> bytes:
+    value = days.to_bytes(4, "little", signed=True)
+    parts = [
+        _encode_varuint(1),
+        _encode_string("d"),
+        _encode_string(ch_type),
+        _encode_varuint(1) + value if ch_type.startswith("Array(") else value,
+    ]
+    return b"".join(parts)
+
+
+@_PARSERS
+@pytest.mark.parametrize("ch_type", ["Date32", "Array(Date32)"])
+def test_date32_before_year_one_is_a_protocol_error(ch_type: str, consume: Consumer):
+    """ClickHouse 26.8 widened `Date32` to year 0, which `date` cannot hold."""
+    with pytest.raises(ChProtocolError, match="Date32 value -719528"):
+        consume(_date32_payload(ch_type, -719528), None)  # 0000-01-01
+
+
+@_PARSERS
+@pytest.mark.parametrize(("days", "expected"), [(-719162, date.min), (2_932_896, date.max)])
+def test_date32_spans_the_whole_date_range(days: int, expected: date, consume: Consumer):
+    assert consume(_date32_payload("Date32", days), None) == [expected]
+
+
 def test_unloadable_server_timezone_only_matters_for_datetime():
     """A timezone the runtime cannot load must not quietly become the local one."""
     parts = [

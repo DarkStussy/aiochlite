@@ -54,7 +54,7 @@ A small, pure-Python async client for ClickHouse over HTTP. Results are decoded 
 - **Fast for pure Python**: in the [benchmark below](#benchmarks), with every client in its default configuration, `fetch_rows()` keeps up with `clickhouse-connect` and its compiled C parser on flat columns, and is 2.1x-2.3x faster than `aiochclient` everywhere. On string-heavy and container-heavy rows it trails `clickhouse-connect` by 32%-56%.
 - **Typed**: complete type hints for IDEs and static type checkers.
 - **Focused API**: ClickHouse over HTTP, without pandas, numpy, Arrow or Polars integrations.
-- **Tested** on Python 3.12–3.14 against ClickHouse 26.3, with additional compatibility coverage
+- **Tested** on Python 3.12–3.14 against ClickHouse 26.8 LTS, with additional compatibility coverage
   for ClickHouse 25.8 LTS.
 
 **Choosing a client.** For DataFrames or column-oriented results, use the official
@@ -459,7 +459,7 @@ aiochlite uses ClickHouse’s `RowBinaryWithNamesAndTypes` for result decoding:
 | `FixedString(N)` | `str` | Null padding stripped; `bytes` via [`binary_columns`](#binary-columns) |
 | **Date/Time** | | |
 | `Date` | `date` | |
-| `Date32` | `date` | |
+| `Date32` | `date` | A year-0 date, which ClickHouse 26.8 allows and `date` cannot hold, raises `ChProtocolError` |
 | `DateTime` | `datetime` | `tzinfo` only if the type includes a timezone |
 | `DateTime64(P)` | `datetime` | `tzinfo` only if the type includes a timezone |
 | `Time` | `timedelta` | Signed seconds; supports values beyond 24h |

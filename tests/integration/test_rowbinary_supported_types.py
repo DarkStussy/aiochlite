@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from aiochlite import AsyncChClient
+from aiochlite.exceptions import ChProtocolError
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.clickhouse]
 
@@ -118,12 +119,14 @@ async def test_rowbinary_supported_types(ch_client: AsyncChClient):
 async def test_rowbinary_datetime_timezone(ch_client: AsyncChClient):
     # Force the server (session) timezone so the naive wall-clock is deterministic regardless
     # of how the ClickHouse instance is configured.
+    # 13:00 MSK is the same instant as the 10:00 UTC above; a CAST would not drop the timezone,
+    # since ClickHouse 26.8 keeps it in the target type.
     query = r"""
         SELECT
             toDateTime('2025-12-14 10:00:00', 'UTC') AS dt_tz,
-            CAST(toDateTime('2025-12-14 10:00:00', 'UTC') AS DateTime) AS dt_naive,
+            toDateTime('2025-12-14 13:00:00') AS dt_naive,
             toDateTime64('2025-12-14 10:00:00.500', 3, 'UTC') AS dt64_tz,
-            CAST(toDateTime64('2025-12-14 10:00:00.500', 3, 'UTC') AS DateTime64(3)) AS dt64_naive
+            toDateTime64('2025-12-14 13:00:00.500', 3) AS dt64_naive
     """
 
     row = await ch_client.fetchone(query, settings={"session_timezone": "Europe/Moscow"})
@@ -140,6 +143,19 @@ async def test_rowbinary_datetime_timezone(ch_client: AsyncChClient):
     assert row["dt_naive"] == datetime(2025, 12, 14, 13, 0, 0)
     assert row["dt64_naive"].tzinfo is None
     assert row["dt64_naive"] == datetime(2025, 12, 14, 13, 0, 0, 500000)
+
+
+@pytest.mark.usefixtures("wide_date32_server")
+@pytest.mark.parametrize("ch_client", [False, True], ids=["eager", "lazy"], indirect=True)
+async def test_rowbinary_date32_extended_range(ch_client: AsyncChClient):
+    row = await ch_client.fetchone("SELECT toDate32('0001-01-01') AS lo, toDate32('9999-12-31') AS hi")
+    assert row is not None
+    assert row["lo"] == date.min
+    assert row["hi"] == date.max
+
+    # Year 0 is the one part of the widened range `date` cannot represent.
+    with pytest.raises(ChProtocolError, match="Date32 value"):
+        await ch_client.fetchval("SELECT toDate32('0000-01-01')")
 
 
 @pytest.mark.parametrize("ch_client", [False, True], ids=["eager", "lazy"], indirect=True)

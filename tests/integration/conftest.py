@@ -51,6 +51,14 @@ async def exception_tag_server(ch_client: AsyncChClient):
 
 
 @pytest.fixture
+async def wide_date32_server(ch_client: AsyncChClient):
+    """Skip on servers that still clamp `Date32` to 1900-2299; ClickHouse 26.8 widened it to 0000-9999."""
+    version: str = await ch_client.fetchval("SELECT version()")
+    if tuple(int(part) for part in version.split(".")[:2]) < (26, 8):
+        pytest.skip(f"ClickHouse {version} predates the widened Date32 range")
+
+
+@pytest.fixture
 async def make_table(ch_client: AsyncChClient) -> AsyncIterator[TableFactory]:
     created: list[str] = []
 
