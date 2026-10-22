@@ -288,6 +288,10 @@ class When(Enum):
     LAUNCH = datetime(2025, 12, 14, 10, 0, 0)
 
 
+class Group(Enum):
+    ONE = frozenset({"a"})
+
+
 class TestParameterEscaping:
     """A parameter is read back from the escaped format, so the value has to arrive escaped."""
 
@@ -378,6 +382,28 @@ class TestEnumMembers:
         assert parsed == {"a": "red", "b": 2, "c": "bold", "d": "2025-12-14 10:00:00"}
 
 
+class TestSets:
+    """A set has no literal of its own; it travels as an array, in whatever order it iterates."""
+
+    def test_a_parameter_is_an_array_literal(self):
+        assert to_clickhouse({7}) == "[7]"
+        assert to_clickhouse(frozenset({"it's"})) == "['it\\'s']"
+        assert to_clickhouse({1, 2}) in ("[1,2]", "[2,1]")
+
+    def test_an_empty_set_is_an_empty_array(self):
+        assert to_clickhouse(set()) == "[]"
+
+    def test_a_set_inside_a_container(self):
+        assert to_clickhouse({"k": {1}}) == "{'k':[1]}"
+        assert to_clickhouse([frozenset({Color.RED})]) == "[['red']]"
+
+    def test_json_encodes_an_array(self):
+        parsed = json.loads(to_json({"a": {1, 2}, "b": frozenset({date(2025, 12, 14)})}))
+
+        assert sorted(parsed["a"]) == [1, 2]
+        assert parsed["b"] == ["2025-12-14"]
+
+
 class TestJsonMapKeys:
     """`dumps` offers `default` the values only, so a key it will not take has to be rendered first."""
 
@@ -398,6 +424,13 @@ class TestJsonMapKeys:
     def test_the_other_keys_dumps_rejects(self, key: object, rendered: str):
         """Keying a Map by one of these never worked, Enum or not."""
         assert json.loads(to_json({"m": {key: 1}})) == {"m": {rendered: 1}}
+
+    def test_a_set_key_is_still_a_key(self):
+        """A set renders as a list, which `dumps` takes as a value but never as a key."""
+        assert json.loads(to_json({"m": {frozenset({"a"}): 1}})) == {"m": {"['a']": 1}}
+
+    def test_a_member_whose_value_is_a_set_is_still_a_key(self):
+        assert json.loads(to_json({"m": {Group.ONE: 1}})) == {"m": {"['a']": 1}}
 
     def test_a_key_nested_below_the_row_is_reached(self):
         assert json.loads(to_json({"rows": [{"m": {Color.RED: 1}}]})) == {"rows": [{"m": {"red": 1}}]}

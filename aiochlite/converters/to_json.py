@@ -10,27 +10,39 @@ from .to_clickhouse import format_datetime, format_timedelta
 
 def _json_default(value: Any) -> Any:
     if isinstance(value, Enum):
-        return value.value
-    if isinstance(value, date):
-        return format_datetime(value) if isinstance(value, datetime) else value.strftime("%Y-%m-%d")
-    if isinstance(value, timedelta):
-        return format_timedelta(value)
-    if isinstance(value, (UUID, Decimal)):
-        return str(value)
-    if isinstance(value, bytes):
+        out = value.value
+    elif isinstance(value, date):
+        out = format_datetime(value) if isinstance(value, datetime) else value.strftime("%Y-%m-%d")
+    elif isinstance(value, timedelta):
+        out = format_timedelta(value)
+    elif isinstance(value, (UUID, Decimal)):
+        out = str(value)
+    elif isinstance(value, (set, frozenset)):
+        out = list(value)
+    elif isinstance(value, bytes):
         # The surrogates become those bytes again when the body is encoded.
-        return value.decode("utf-8", "surrogateescape")
-    return str(value)
+        out = value.decode("utf-8", "surrogateescape")
+    else:
+        out = str(value)
+
+    return out
+
+
+def _is_json_key(key: Any) -> bool:
+    return isinstance(key, (str, int, float)) or key is None
 
 
 def _json_key(key: Any) -> Any:
     """A key `dumps` accepts, rendered by the rules `_json_default` gives values."""
-    if isinstance(key, (str, int, float)) or key is None:
+    if _is_json_key(key):
         return key
 
     rendered = _json_default(key)
-    # An Enum yields its value, which may itself need rendering. Nothing needs a third pass.
-    return rendered if isinstance(rendered, (str, int, float)) or rendered is None else _json_default(rendered)
+    # An Enum yields its value, which may itself need rendering.
+    if not _is_json_key(rendered):
+        rendered = _json_default(rendered)
+    # A set yields a list, which no key can be.
+    return rendered if _is_json_key(rendered) else str(rendered)
 
 
 def _with_rendered_keys(value: Any) -> Any:

@@ -126,7 +126,7 @@ def _enum_value(value: Any) -> Any:
 def _container_clickhouse_literal(value: Any) -> str | _MissingType:
     if isinstance(value, tuple):
         return f"({','.join(_to_clickhouse_literal(item) for item in value)})"
-    if isinstance(value, list):
+    if isinstance(value, (list, set, frozenset)):
         return f"[{','.join(_to_clickhouse_literal(item) for item in value)}]"
     if isinstance(value, dict):
         items = ",".join(
@@ -189,7 +189,7 @@ def to_clickhouse(value: Any) -> str | int | float:
             out = value
         elif value_type is str:
             out = _escape_ch_string_literal(value)
-        elif isinstance(value, (list, tuple, dict)):
+        elif isinstance(value, (list, tuple, dict, set, frozenset)):
             # Its strings are escaped already, and the server unescapes once.
             out = _to_clickhouse_literal(value)
         else:

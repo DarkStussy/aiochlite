@@ -29,6 +29,16 @@ async def test_insert_tuple_rows(ch_client: AsyncChClient, make_table: TableFact
     assert [(r["id"], r["name"]) for r in rows] == data
 
 
+async def test_insert_a_set_into_an_array(ch_client: AsyncChClient, make_table: TableFactory):
+    table = await make_table(id="UInt32", a="Array(UInt8)", m="Map(String, Array(String))")
+    await ch_client.insert(
+        table, [{"id": 1, "a": {1, 2}, "m": {"k": frozenset({"x"})}}, {"id": 2, "a": set(), "m": {}}]
+    )
+    rows = await ch_client.fetch(f"SELECT id, arraySort(a) AS a, m FROM {table} ORDER BY id")
+
+    assert [(r["id"], r["a"], r["m"]) for r in rows] == [(1, [1, 2], {"k": ["x"]}), (2, [], {})]
+
+
 async def test_insert_dict_rows_scalar_types(ch_client: AsyncChClient, make_table: TableFactory):
     table = await make_table(
         id="UInt32",

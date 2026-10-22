@@ -85,6 +85,18 @@ async def test_params_scalar_types(ch_client: AsyncChClient):
     assert row["ni"] is None
 
 
+async def test_set_params_are_arrays(ch_client: AsyncChClient):
+    row = await ch_client.fetchone(
+        "SELECT arraySort({s:Array(UInt8)}) AS s, arraySort({f:Array(String)}) AS f, {e:Array(Int32)} AS e",
+        params={"s": {1, 2}, "f": frozenset({"a", "it's"}), "e": set()},
+    )
+
+    assert row is not None
+    assert row["s"] == [1, 2]
+    assert row["f"] == ["a", "it's"]
+    assert row["e"] == []
+
+
 async def test_params_container_types(ch_client: AsyncChClient):
     arr_s = ["a", "x\\y", "quote:'", "line\nbreak"]
     mp: dict[str, Any] = {"k": 1, "x\\y": -2, "quote:'": 3}

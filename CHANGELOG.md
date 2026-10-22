@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- **A `set` or `frozenset` sent as a parameter or inserted failed with a server error**, such as
+  `Code: 130. Array does not start with '[' character`. It fell through to `str()`, which renders
+  `{1, 2}`, a Python repr the server cannot read. A set now travels as an array, the same as a
+  `list`, at any level of nesting. Its elements keep the set's iteration order, which is arbitrary.
+
 ## 1.8.2 (2026-09-02)
 
 ### Fixed

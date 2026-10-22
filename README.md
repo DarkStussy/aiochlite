@@ -240,7 +240,7 @@ result = await client.fetch(
 # Lists and tuples (arrays)
 result = await client.fetch(
     "SELECT * FROM users WHERE id IN {ids:Array(UInt32)}",
-    params={"ids": [1, 2, 3]}  # or tuple: (1, 2, 3)
+    params={"ids": [1, 2, 3]}  # or tuple (1, 2, 3), or set {1, 2, 3}
 )
 
 # Datetime and date
@@ -282,7 +282,7 @@ result = await client.fetch(
 
 **Supported parameter types:**
 - Basic: `int`, `float`, `str`, `bool`, `None`
-- Collections: `list`, `tuple`, `dict`
+- Collections: `list`, `tuple`, `dict`, `set`, `frozenset`
 - Date/Time: `datetime`, `date`, `timedelta`
 - Special: `UUID`, `Decimal`, `bytes`, `enum.Enum`
 
@@ -496,6 +496,8 @@ When sending data to ClickHouse (query parameters and inserts), Python types are
 - `UUID` / `Decimal` → string representation
 - `enum.Enum` → its value, itself converted by these rules
 - `list` → array literal (e.g. `[1,2,3]`)
+- `set` / `frozenset` → array literal, in the set's iteration order — not sorted, and not stable
+  between runs for strings
 - `tuple` → tuple literal (e.g. `(1,2,3)`)
 - `dict` → map literal (e.g. `{'k':'v'}`)
 - `bytes` → the bytes themselves, whether or not they are UTF-8
