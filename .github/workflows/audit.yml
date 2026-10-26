@@ -1,0 +1,43 @@
+name: Audit
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/audit.yml"
+      - "pyproject.toml"
+      - "uv.lock"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/audit.yml"
+      - "pyproject.toml"
+      - "uv.lock"
+  schedule:
+    # Advisories land against versions that are already locked, so re-run weekly.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  pip-audit:
+    name: Audit dependencies
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+
+      - name: Export locked dependencies
+        run: uv export --all-extras --no-hashes --no-emit-project --format requirements-txt -o "${RUNNER_TEMP}/requirements.txt"
+
+      - name: Audit
+        run: uv run --with pip-audit --isolated pip-audit -r "${RUNNER_TEMP}/requirements.txt"
